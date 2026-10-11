@@ -349,8 +349,43 @@ body.ytm-custom-layout ytmusic-nav-bar.moviemode {
   --ytmi-nav-width: min(max(60%, 860px), calc(100% - 24px));
 }
 
-body.ytm-custom-layout ytmusic-nav-bar.moviemode .center-content.ytmusic-nav-bar {
-  width: min(var(--ytmusic-content-width), 1000px);
+/* 検索欄はナビバーの真ん中に置く。YTM の置き方は閲覧ページ用で、窓の幅が
+   1578px 未満ならロゴの右に左寄せ(余白 100px)、それ以上なら本文の列の中央
+   (左のメニューの幅だけ右へずらす)。どちらも浮かせた幅 80% のナビバーの
+   中央にはならず、Windows の拡大 125%(1536px 幅)などでは左に寄っていた。
+   左(ロゴ)・中(検索欄)・右(ボタン)の 3 列にし、左右の列を同じ幅で取って
+   真ん中を揃える。検索欄の幅は YTM と同じ 480px まで。左右の列のために
+   それぞれ 260px(左はロゴの列 240px)を空け、足りない時は検索欄の方を
+   縮める(右の列がそれを超える時も重ならない。真ん中から少しずれるだけ)。 */
+body.ytm-custom-layout ytmusic-nav-bar {
+  display: grid !important;
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, min(480px, calc(100% - 520px))) minmax(max-content, 1fr) !important;
+  align-items: center !important;
+}
+
+body.ytm-custom-layout ytmusic-nav-bar > .left-content {
+  justify-self: start !important;
+}
+
+body.ytm-custom-layout ytmusic-nav-bar > .center-content.ytmusic-nav-bar {
+  position: relative !important;
+  left: auto !important;
+  right: auto !important;
+  transform: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  justify-content: center !important;
+}
+
+/* YTM は右のボタンの後ろに 100px 空け(窓が狭いと 56px)、1578px 以上では
+   absolute で右から 100px の所に置く。浮かせたナビバーでは右端だけ大きく
+   空いて見え、absolute だと列にも入らない。左のロゴの余白(16px)と揃える */
+body.ytm-custom-layout ytmusic-nav-bar > .right-content {
+  justify-self: end !important;
+  position: static !important;
+  padding-right: 16px !important;
 }
 
 /* 出す条件。以前は :hover だけだったので、検索欄に文字を打っている
@@ -404,7 +439,7 @@ body.ytm-custom-layout ytmusic-search-box {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  margin-left: 96px;
+  margin-left: 0 !important;
 }
 
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-player#player.style-scope.ytmusic-player-page.moviemode {
@@ -2709,6 +2744,10 @@ body.ytm-custom-layout ytmusic-miniplayer {
      バーの外へはみ出して出るので、hidden にすると切れて使えなくなる(実機)。
      旧バーのような「中身が収まらず切れる」問題は、3 列のグリッドなので起きない。 */
   overflow: visible !important;
+  /* 新バーは YTM が bottom に 0.5 秒の動きを付けている。Immersion を開くと
+     画面の下端から 40px の位置まで毎回せり上がり、組み立てが遅く見えていた。
+     旧バーと同じく、動かすのは出し入れ(動画モードで隠れる時)の濃さだけにする */
+  transition: opacity 0.5s ease, visibility 0.5s ease !important;
 }
 
 body.ytm-custom-layout ytmusic-miniplayer.moviemode {
@@ -5009,8 +5048,11 @@ a.settings-link-btn svg {
 }
 
 
+/* 動かすのは色だけ。以前は all だったので、Immersion の開閉で変わる
+   余白・文字の太さまで 0.3 秒かけて動き、開くたびにバーのボタンが
+   横へずるずる滑って「組み立てが遅い」ように見えていた */
 #my-mode-toggle {
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 

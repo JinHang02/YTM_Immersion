@@ -1949,6 +1949,29 @@ const getMetadata = () => {
 };
 
 
+// 画面に出ているアーティスト名のうち、MediaSession と表記だけが違うもの。
+// YTM の MediaSession のアーティスト名は曲(リリース)ごとに英字だったり
+// 日本語だったりする。同じ日本語の画面でも、花鋏キョウの「Starry」は
+// 「花鋏キョウ」、「Starry (night Remix)」は「Kyo Hanabasami」だった(実機)。
+// LRCHub の曲名検索はアーティスト名も照合するので、登録が画面の表記だと
+// 当たらない。その時に引き直す名前として、LRCHub の検索にだけ渡す。
+//  ・プレイヤーバーの曲名が MediaSession と同じ曲の時だけ読む(曲送りの
+//    直後は、バーに前の曲が残っていることがある)
+//  ・片方だけが日本語・中国語・韓国語の文字を含む組み合わせに限る。両方が
+//    同じ文字なら、表記ゆれではなく別の名義(feat. の有無など)の場合がある
+//    (replay-manager の _looksSameArtist と同じ考え)
+const ARTIST_SCRIPT_RE = /[぀-ヿ㐀-鿿豈-﫿가-힯]/;
+const readShownArtistVariant = (meta) => {
+  const title = String(meta?.title || '').trim();
+  const artist = String(meta?.artist || '').trim();
+  if (!title || !artist) return '';
+  const barTitle = String(document.querySelector(PLAYER_BAR_TITLE_SELECTOR)?.textContent || '').trim();
+  if (!barTitle || normalizeTitleForSettle(barTitle) !== normalizeTitleForSettle(title)) return '';
+  const shown = parseBylineArtist(document.querySelector(PLAYER_BAR_BYLINE_SELECTOR)?.textContent || '').trim();
+  if (!shown || shown === artist || shown.length > 60) return '';
+  return ARTIST_SCRIPT_RE.test(shown) !== ARTIST_SCRIPT_RE.test(artist) ? shown : '';
+};
+
 const extractVideoIdFromHref = (href) => {
   if (!href) return null;
   try {
@@ -7712,6 +7735,10 @@ async function loadLyrics(meta, options = {}) {
       lyric_source_mode: config.lyricSourceMode || 'ytm',
       request_id: requestId,
       track_key: thisKey,
+      // LRCHub の曲名検索が 0 件だった時の引き直し用(readShownArtistVariant)。
+      // 引き直しで採るのは曲名が title_full と同じレコードだけ
+      artist_alt: readShownArtistVariant(meta),
+      title_full: meta.title || '',
     };
     if (translate_to.length) payload.translate_to = translate_to;
 
@@ -9779,7 +9806,26 @@ const titlesAgree = (a, b) => {
   if (!x || !y) return true; // 片方が読めない時は判断しない
   return x.includes(y) || y.includes(x);
 };
+// 曲名もアーティスト名も空の MediaSession(広告の切り替わりで一瞬そうなる。
+// 実機)も、まだ追いついていないとみなして同じだけ待つ。進めると空のまま
+// 歌詞を問い合わせ、LRCHub は動画 ID が正しくても REQUIRED_TRACK_ARTIST で
+// 断り、結果は「///」というキーでキャッシュに残っていた。
+// 1.5 秒たっても空なら、従来どおり先へ進む。
+const metadataIsBlank = (meta) => !String(meta?.title || '').trim() && !String(meta?.artist || '').trim();
 const shouldWaitForSettledMetadata = (meta, videoId) => {
+  if (metadataIsBlank(meta)) {
+    const now = performance.now();
+    // 曲名で待つ方(下)とは数え始めを分ける
+    const settleId = `blank:${videoId || ''}`;
+    if (_metaSettleVideoId !== settleId) {
+      _metaSettleVideoId = settleId;
+      _metaSettleSince = now;
+    }
+    if (now - _metaSettleSince >= META_SETTLE_MAX_MS) return false;
+    clearTimeout(_metaSettleTimer);
+    _metaSettleTimer = setTimeout(() => requestImmersionTick(), META_SETTLE_RETRY_MS);
+    return true;
+  }
   if (!videoId || videoId === (currentLyricsVideoId || '')) {
     _metaSettleVideoId = '';
     return false;
@@ -9974,12 +10020,21 @@ const applyImmersionShown = (shown) => {
   document.body.classList.toggle('ytm-custom-layout', shown);
   PlayerBar.check({ shown, skip: true });
   syncBarPlayerButton();
+  // 新バーの幅合わせ(右の列が収まる幅・時刻を隠すか)は、開いた時点で済ませる。
+  // 見張り(0.6 秒後)まで待つと、閉じた時に外した幅のまま一度出てから
+  // 広がり直し、閉じる/戻る・IMMERSION の二度押しで戻るたびにバーが組み替わって見えた
+  balanceWizBar();
 };
 
 const setImmersionOpen = (open) => {
   config.mode = !!open;
   _immersionManualOpen = !!open;
   _immersionManualHref = open ? location.pathname + location.search : '';
+  // ボタンの見た目(太字で幅が少し広がる)を先に変える。後にすると、
+  // 下の幅合わせ(balanceWizBar)が変わる前の幅で測り、少し後の見張りで
+  // バーがもう一度広がり直していた
+  const btn = document.getElementById('my-mode-toggle');
+  if (btn) btn.classList.toggle('active', config.mode);
   applyImmersionShown(shouldShowImmersion());
   // 動画モードの組み替えは #main-panel 等の YTM の作りに頼っている。
   // そこで失敗しても、開閉そのものは止めない。
@@ -9988,8 +10043,8 @@ const setImmersionOpen = (open) => {
   } catch (e) {
     console.warn('[YTM] 動画モードの切り替えに失敗', e);
   }
-  const btn = document.getElementById('my-mode-toggle');
-  if (btn) btn.classList.toggle('active', config.mode);
+  // 動画モードではバーの幅の上限が変わるので、組み替えた後で測り直す
+  balanceWizBar();
   // 閉じている間に曲が変わっていたら、開いた瞬間に今の曲へ合わせる。
   // このボタンは監視の対象外(#right-controls)なので、自分で頼まないと
   // 次にプレイヤーバーが動くまで(たいてい次の曲まで)前の曲が出ていた。

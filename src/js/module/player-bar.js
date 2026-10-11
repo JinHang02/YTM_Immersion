@@ -262,8 +262,14 @@ const PlayerBar = (() => {
   // 画面に何も無いのに「在る」ことになる。実際にその位置を押した時に
   // 何に当たるかで判断する。
   // 戻り値: true(押せる)/ false(押せない)/ null(一時的に覆われていて判断しない)
+  // 窓の形のダイアログ(︙ の「曲のクレジットを表示」など)は、開いている間
+  // 画面全体を覆う幕(tp-yt-iron-overlay-backdrop)を body の直下に敷く。
+  // ダイアログの外の当たり判定はこの幕に当たるので、幕も一時的な覆いに数える。
+  // 数えないと、クレジットを見ている間だけ自前のバーに切り替わり、
+  // ダイアログの手前に出ていた(実機)
   const TRANSIENT_COVER_SELECTOR = [
     'ytmusic-popup-container', 'tp-yt-iron-dropdown', 'tp-yt-paper-dialog', 'ytmusic-dialog',
+    'tp-yt-iron-overlay-backdrop', 'iron-overlay-backdrop',
     '[role="dialog"]', '[role="menu"]', '[role="listbox"]', '[role="tooltip"]',
   ].join(', ');
   const isOwnOverlay = (el) => {

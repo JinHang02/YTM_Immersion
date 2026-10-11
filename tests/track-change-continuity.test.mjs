@@ -83,6 +83,35 @@ test('曲が変わっていない時や、曲名が読めない時は待たな�
   assert.equal(wait({ title: 'Song A' }, 'new'), false)
 })
 
+test('曲名もアーティスト名も空の間は待つ(広告の切り替わり)。1.5 秒たったら従来どおり進む', () => {
+  // 進めると空のまま歌詞を問い合わせ、LRCHub は REQUIRED_TRACK_ARTIST で断り、
+  // 結果は「///」というキーでキャッシュに残っていた
+  const { state, wait } = loadSettle()
+  state.bar = ''
+  // 同じ曲(広告が曲の途中に挟まった時)でも、新しい曲でも待つ
+  assert.equal(wait({ title: '', artist: '' }, 'old'), true)
+  assert.equal(state.retries, 1, '埋まったか見直す予約が無い')
+  state.now = 1499
+  assert.equal(wait({ title: ' ', artist: '' }, 'old'), true)
+  state.now = 1500
+  assert.equal(wait({ title: '', artist: '' }, 'old'), false)
+  // どちらか片方でもあれば、空とはみなさない(従来どおり)
+  const other = loadSettle()
+  assert.equal(other.wait({ title: 'Song A', artist: '' }, 'old'), false)
+  assert.equal(other.wait({ title: '', artist: 'Artist' }, 'old'), false)
+})
+
+test('空の間の待ちは、曲名の食い違いの待ちと数え始めを分ける', () => {
+  const { state, wait } = loadSettle()
+  wait({ title: '', artist: '' }, 'new')
+  state.now = 1400
+  // 埋まった後に曲名が食い違えば、そこから 1.5 秒待てる
+  state.bar = 'Song B'
+  assert.equal(wait({ title: 'Song A', artist: 'X' }, 'new'), true)
+  state.now = 2800
+  assert.equal(wait({ title: 'Song A', artist: 'X' }, 'new'), true)
+})
+
 test('tick は曲の切り替えを判定する前に、メタデータが揃うのを待つ', () => {
   const tick = sliceBetween('const tick = async () => {', '// 背景に使う画像の読み込み世代。')
   const waitAt = tick.indexOf("if (shouldWaitForSettledMetadata(meta, getCurrentVideoId() || '')) return;")

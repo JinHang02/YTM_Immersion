@@ -1063,12 +1063,35 @@ export const searchLrchub = (track, artist, limit = 30) => {
 // そのあとも当たらない。
 const LRCHUB_CANDIDATE_LOOKUP_LIMIT = 3;
 
+// 曲名の突き合わせ用。大小・字形・空白の違いだけを無視する
+const exactTitleKey = (value) => String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+
 export const fetchFromLrchubSearch = async (params = {}) => {
-  const { track, artist, limit = 30, translate_to, video_id } = params;
+  const { track, artist, artist_alt, title_full, limit = 30, translate_to, video_id } = params;
   if (!track) return null;
 
-  const searchRes = await searchLrchub(track, artist, limit);
-  const candidates = getLrchubSearchCandidates(searchRes);
+  let searchRes = await searchLrchub(track, artist, limit);
+  let candidates = getLrchubSearchCandidates(searchRes);
+
+  // 0 件なら、画面に出ている表記のアーティスト名で一度だけ引き直す。
+  // YTM の MediaSession は曲によってアーティスト名が英字(Kyo Hanabasami)で、
+  // LRCHub の登録が画面の表記(花鋏キョウ)だと検索が当たらなかった(実機)。
+  // 検索の曲名は括弧を落としているので、「Starry (night Remix)」でも
+  // 「Starry」で探す。別の版(原曲)を掴まないよう、引き直しで採るのは
+  // 曲名が YTM の曲名そのもの(title_full)と同じレコードだけにする。
+  const altArtist = String(artist_alt || '').trim();
+  const fullTitleKey = exactTitleKey(title_full);
+  if (!candidates.length && altArtist && fullTitleKey && altArtist !== String(artist || '').trim()) {
+    const altRes = await searchLrchub(track, altArtist, limit);
+    const altCandidates = getLrchubSearchCandidates(altRes)
+      .filter(cand => exactTitleKey(cand?.track || cand?.title) === fullTitleKey);
+    if (altCandidates.length) {
+      // 外した候補が results / items の側から戻ってこないよう、候補は candidates だけに置く
+      const { results, items, ...altMeta } = (altRes && typeof altRes === 'object' && !Array.isArray(altRes)) ? altRes : {};
+      searchRes = { ...altMeta, candidates: altCandidates };
+      candidates = altCandidates;
+    }
+  }
 
   const direct = await normalizeRawLrchubLyricsForVideo(searchRes, video_id);
   if (direct && direct.lyrics && direct.lyrics.trim()) {

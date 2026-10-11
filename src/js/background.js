@@ -388,6 +388,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       lyric_source_mode = 'standard',
       request_id,
       track_key,
+      artist_alt,
+      title_full,
     } = req.payload || {};
     const tabId = sender && sender.tab ? sender.tab.id : null;
     const resolvedVideoId = video_id || API.extractVideoIdFromUrl(youtube_url) || '';
@@ -399,7 +401,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     // 乗っていた歌詞から入れ替わることがある、と設定画面に明記してある)。
     const preferWordSync = lyric_source_mode === 'wordsync';
 
-    YTMLog.log('[BG] GET_LYRICS', { track, artist, lyric_source_mode });
+    YTMLog.log('[BG] GET_LYRICS', { track, artist, artist_alt, lyric_source_mode });
 
     let responded = false;
     const sendOnce = (payload) => {
@@ -953,7 +955,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         if (getHubLyricsQuality(earlyPrimary.res) < 5) {
           const earlySearchTask = makeRawHubTask(
             HUB_TITLE_SEARCH_SOURCE,
-            API.fetchFromLrchubSearch({ track, artist, limit: 30, translate_to, video_id: resolvedVideoId }),
+            API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: resolvedVideoId }),
             'LRCHub search'
           );
           await API.withTimeout(earlySearchTask, 5000, 'lrchub search upgrade').catch(() => null);
@@ -1004,7 +1006,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       const searchRawTask = lrchubOn
         ? makeRawHubTask(
           HUB_TITLE_SEARCH_SOURCE,
-          API.fetchFromLrchubSearch({ track, artist, limit: 30, translate_to, video_id: resolvedVideoId }),
+          API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: resolvedVideoId }),
           'LRCHub search'
         )
         : null;

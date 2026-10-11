@@ -229,6 +229,11 @@ test('押せるかは、その位置で何に当たるかで決める', () => {
   assert.equal(probe(wrapper), false)
   // メニューが一時的に被さっているだけなら判断しない
   assert.equal(probe(popup), null)
+  // 窓の形のダイアログ(曲のクレジットなど)が敷く全面の幕も一時的な覆い。
+  // 押せないと数えると、クレジットを見ている間だけ自前のバーが手前に出ていた
+  const backdrop = new El('tp-yt-iron-overlay-backdrop')
+  w.body.append(backdrop)
+  assert.equal(probe(backdrop), null)
   // 大きさが無い・画面の外
   bar.rect = { left: 0, top: VH + 10, width: VW, height: 72 }
   assert.equal(probe(inner), false)
@@ -796,7 +801,7 @@ test('▼: Immersion を切って曲を大きく出している(プレイヤー�
 test('▼▲: Immersion の出し入れ・プレイヤーページの開閉と同時に合わせる(次の tick を待たない)', () => {
   // tick は ▼▲ を合わせた後に Immersion の出し入れを変えるので、それだけだと
   // 開閉の直後に前の状態のまま残っていた
-  assert.match(ui, /const applyImmersionShown = \(shown\) => \{[\s\S]{0,160}syncBarPlayerButton\(\);\s*\};/)
+  assert.match(ui, /const applyImmersionShown = \(shown\) => \{[\s\S]{0,160}syncBarPlayerButton\(\);[\s\S]{0,400}?\n\};/)
   assert.match(ui, /_layoutObserver = new MutationObserver\(\(\) => \{[\s\S]{0,120}syncBarPlayerButton\(\);\s*scheduleTick\(\);/)
 })
 
@@ -895,4 +900,35 @@ test('旧バーの音量スライダーを潰さない: 左の列を先に縮め
   assert.match(css, /body\.ytm-custom-layout ytmusic-player-bar > \.left-controls \{\s*flex: 0 100 auto !important;\s*min-width: min-content !important;\s*\}/)
   // 一般の「左の列は縮めない」より後に来て、上書きできる詳しさであること
   assert.ok(css.indexOf('body.ytm-custom-layout ytmusic-player-bar > .left-controls {') > css.indexOf('body.ytm-custom-layout .left-controls {'))
+})
+
+test('Immersion に戻った時、バーは一度で組み上がる(閉じる/戻る・IMMERSION の二度押し)', () => {
+  // 新バーの幅合わせを見張り(0.6 秒後)まで待たず、出した時点で済ませる
+  const apply = ui.slice(ui.indexOf('const applyImmersionShown = (shown) => {'), ui.indexOf('\n};', ui.indexOf('const applyImmersionShown = (shown) => {')))
+  assert.match(apply, /syncBarPlayerButton\(\);[\s\S]*balanceWizBar\(\);/)
+  // IMMERSION の見た目(太字で幅が変わる)は、幅を測る前に変える
+  const open = ui.slice(ui.indexOf('const setImmersionOpen = (open) => {'), ui.indexOf('\n};', ui.indexOf('const setImmersionOpen = (open) => {')))
+  assert.ok(open.indexOf("btn.classList.toggle('active', config.mode)") < open.indexOf('applyImmersionShown('))
+  assert.ok(open.lastIndexOf('balanceWizBar();') > open.indexOf('changeIModeUIWithMovieMode'))
+  // 余白や幅を動かす transition を付けない(開くたびにボタンが横へ滑っていた)
+  const toggle = css.match(/#my-mode-toggle \{\s*transition: ([^;]+);/)
+  assert.ok(toggle, 'IMMERSION の transition')
+  assert.doesNotMatch(toggle[1], /\ball\b|margin|padding|width|font/)
+  // 新バーは YTM の bottom の動き(0.5 秒せり上がる)を外す
+  const wiz = css.slice(css.indexOf('body.ytm-custom-layout ytmusic-miniplayer {'), css.indexOf('}', css.indexOf('body.ytm-custom-layout ytmusic-miniplayer {')))
+  assert.match(wiz, /transition: opacity 0\.5s ease, visibility 0\.5s ease !important;/)
+})
+
+test('Immersion のナビバーでは、検索欄を真ん中に置く', () => {
+  // YTM の置き方(1578px 未満は左寄せ、以上は本文の列の中央)を使わず、3 列で揃える
+  assert.match(css, /body\.ytm-custom-layout ytmusic-nav-bar \{\s*display: grid !important;\s*grid-template-columns: minmax\(max-content, 1fr\) minmax\(0, min\(480px, [^)]+\)\)\) minmax\(max-content, 1fr\) !important;/)
+  const center = css.slice(css.indexOf('body.ytm-custom-layout ytmusic-nav-bar > .center-content.ytmusic-nav-bar {'))
+  const centerRule = center.slice(0, center.indexOf('}'))
+  for (const decl of ['position: relative !important;', 'transform: none !important;', 'padding: 0 !important;', 'justify-content: center !important;']) {
+    assert.ok(centerRule.includes(decl), decl)
+  }
+  // 1578px 以上で YTM が absolute にする右の列も、列の中に戻す
+  assert.match(css, /ytmusic-nav-bar > \.right-content \{\s*justify-self: end !important;\s*position: static !important;/)
+  // 以前の左寄せ用の余白は残さない
+  assert.doesNotMatch(css, /margin-left: 96px/)
 })
