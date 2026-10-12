@@ -10565,11 +10565,21 @@ const tick = async () => {
     refreshLockMenu();
     resetLyricScrollState(ui.lyrics);
     setTimeout(() => {
-      if (currentKey !== key) return;
-      if ((currentLyricsVideoId || '') !== videoId || (getCurrentVideoId() || '') !== videoId) return;
+      // この間に次の曲の切り替えを済ませていたら、そちらに任せる
+      if (currentKey !== key || (currentLyricsVideoId || '') !== videoId) return;
       const metaNow = getMetadata() || meta;
       const keyNow = `${metaNow.title}///${metaNow.artist}`;
-      if (keyNow !== key) return;
+      if ((getCurrentVideoId() || '') !== videoId || keyNow !== key) {
+        // 待つ間に曲名か動画が変わった。読み込み直した直後に広告が始まると、
+        // 曲名がこの 250ms の間に広告のものに変わる(実機)。ここでやめるだけ
+        // だと、広告が終わって曲名が元に戻った時に tick は「同じ曲のまま」と
+        // 見て取り直さず、歌詞が Loading... のまま止まっていた。
+        // 切り替えを済ませていないことにして、次の tick で改めて扱わせる
+        // (広告の間は tick が待つので、終わってから取りに行く)。
+        currentLyricsVideoId = null;
+        requestImmersionTick();
+        return;
+      }
       loadLyrics(metaNow);
       startLyricRafLoop();
       // 以前は 800ms 待っていた。メタデータの食い違いは上で待つようにしたので、

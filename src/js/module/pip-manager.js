@@ -372,6 +372,22 @@ const forceStyle = pipDoc.createElement('style');
           color: var(--ytm-singer-color) !important;
         }
 
+        /* 薄い行は字を不透明で描いて本文ごと薄める(本体の style.css の
+           .lyric-main と同じ)。行の rgba のまま描くと、詰めた字間で重なる所
+           (tt の横棒など)だけ 2 回塗られて明るく浮く。濃さは元の 0.25 / 0.6。 */
+        body:not(.ytm-no-timestamp) .lyric-line:not(.active) .lyric-main {
+          color: #fff;
+          opacity: 0.25;
+          transition: opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        body:not(.ytm-no-timestamp) .lyric-line:not(.active):hover .lyric-main {
+          opacity: 0.6;
+        }
+        body.ytm-singer-colors-enabled .lyric-line[data-singer-color] .lyric-main {
+          color: inherit !important;
+          opacity: 1 !important;
+        }
+
         .lyric-line {
           text-wrap: balance !important;
           word-break: keep-all !important;     

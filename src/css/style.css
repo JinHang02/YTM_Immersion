@@ -442,6 +442,50 @@ body.ytm-custom-layout ytmusic-search-box {
   margin-left: 0 !important;
 }
 
+/* 窓の幅が 900px 以下だと、YTM は検索欄を虫眼鏡だけの形(is-mobile-view)に
+   畳む。上の枠と背景がその 54px の箱に掛かり、横に余裕があっても正方形の
+   ボタンになっていた。真ん中の列は 260px ずつ空けた残り(上の grid)なので、
+   この幅ではほぼ 0 で、虫眼鏡は列からはみ出して置かれていた。
+   畳んだ形の間は、左右の列を中身の幅まで詰めて、検索欄を残りいっぱい
+   (広い時と同じ 480px まで)に広げ、案内の文も出す。入力欄を押すと
+   虫眼鏡と同じく開く(実機)。案内の文が入らない細さでは文だけ消す
+   (語の途中で切れた 1 字が残るため)。 */
+body.ytm-custom-layout ytmusic-nav-bar:has(ytmusic-search-box[is-mobile-view]) {
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, 480px) minmax(max-content, 1fr) !important;
+  column-gap: 12px !important;
+}
+
+body.ytm-custom-layout ytmusic-nav-bar ytmusic-search-box[is-mobile-view]:not([opened]):not([has-query]) {
+  width: 100% !important;
+  container: ytmi-search / inline-size;
+}
+
+body.ytm-custom-layout ytmusic-nav-bar ytmusic-search-box[is-mobile-view]:not([opened]):not([has-query]) input.ytmusic-search-box {
+  display: inline-block !important;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+@container ytmi-search (width < 180px) {
+  body.ytm-custom-layout ytmusic-nav-bar ytmusic-search-box[is-mobile-view] input.ytmusic-search-box::placeholder {
+    color: transparent;
+  }
+}
+
+/* 開いた形は YTM が absolute で「ナビバーの幅いっぱいの中央」に置く。
+   こちらで真ん中の列を relative にしているので、その細い列が基準になり、
+   480px の欄が列の左端から右へはみ出して切れていた。開いている間だけ
+   列の基準を外してナビバーを基準にし、YTM の狭い作りと同じくナビバーを
+   端まで覆う(480px で真ん中に置くと、両脇にロゴとボタンが半端に覗く) */
+body.ytm-custom-layout ytmusic-nav-bar:has(ytmusic-search-box[is-mobile-view]:is([opened], [has-query])) > .center-content.ytmusic-nav-bar {
+  position: static !important;
+}
+
+body.ytm-custom-layout ytmusic-nav-bar ytmusic-search-box[is-mobile-view]:is([opened], [has-query]) {
+  width: calc(100% - 24px) !important;
+  margin: 0 auto !important;
+}
+
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-player#player.style-scope.ytmusic-player-page.moviemode {
   position: absolute !important;
   width: 100%;
@@ -1945,6 +1989,25 @@ body.ytm-custom-layout.ytm-fade-past-lyrics:not(.ytm-lyric-card-selecting) #my-l
   line-height: 1.35;
 }
 
+/* 薄い行は、字を不透明で描いてから本文ごとまとめて薄める。
+   行の色(rgba の 0.3)のまま描くと、字は 1 つずつ半透明で重ね塗りされるので、
+   詰めた字間で重なる所(little の tt の横棒など)だけ 2 回塗られて明るく浮く。
+   opacity は本文を 1 枚の絵にしてから薄めるので、重なっても濃さは変わらない。
+   見た目の濃さは元と同じ 0.3(行に掛かる lyric-past の opacity とも掛け算のまま)。
+   薄める時だけ時間をかける。光る側は行の color の遷移が受け持つので、
+   ここで戻りにも時間をかけると 2 つが掛け合わさって一瞬暗くなる。
+   色分け(data-singer-color)した行は不透明の色そのままなので外す。 */
+body.ytm-custom-layout:not(.ytm-no-timestamp) #my-lyrics-container .lyric-line:not(.active):not(.ytm-card-selected) .lyric-main {
+  color: #fff;
+  opacity: 0.3;
+  transition: opacity 0.5s;
+}
+
+body.ytm-custom-layout.ytm-singer-colors-enabled:not(.ytm-no-timestamp) #my-lyrics-container .lyric-line[data-singer-color]:not(.active):not(.ytm-card-selected) .lyric-main {
+  color: inherit;
+  opacity: 1;
+}
+
 body.ytm-custom-layout.ytm-animated-caption-mode #my-lyrics-container {
   position: relative;
   --ytm-animated-font-scale: 0.5;
@@ -2799,6 +2862,18 @@ ytmusic-miniplayer .ytMusicMiniPlayerProgressBar:is(:hover, :active, :focus-visi
 
 ytmusic-miniplayer .ytMusicMiniPlayerProgressBar:focus-visible {
   outline-offset: -7px !important;
+}
+
+/* つまみ(12px)を線の真ん中に置く。YTM はシークバーではなくバーのどこかに
+   乗せた時(.ytMusicMiniPlayerHost:hover)にもつまみを出すが、位置は
+   シークバーに乗せた時の 5px の線用(-3.5px)のままで、線は 3px のままなので、
+   つまみが線より 1px 下に出ていた。線の太さに合わせて (線 - 12px) / 2 にする */
+ytmusic-miniplayer .ytMusicMiniPlayerProgressBar::-webkit-slider-thumb {
+  margin-top: -4.5px !important;
+}
+
+ytmusic-miniplayer .ytMusicMiniPlayerProgressBar:is(:hover, :active, :focus-visible)::-webkit-slider-thumb {
+  margin-top: -3.5px !important;
 }
 
 /* 右の列(時刻・字幕・音量・⋮)は、音量の縦スライダーをシークバーの上に
@@ -3761,6 +3836,13 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
     bottom: 24px !important;
     left: 50% !important;
     transform: translateX(-50%) !important;
+  }
+
+  /* 新バーも同じ高さに下ろす。広い画面の 40px のままだと、この位置に
+     合わせてある取得元の表示(上の ytm-source-inline)がバーの上端に
+     8px 被り、歌詞の下の逃げ場も 0 になっていた */
+  body.ytm-custom-layout ytmusic-miniplayer {
+    bottom: 24px !important;
   }
 
   body.ytm-custom-layout .ytm-upload-menu {

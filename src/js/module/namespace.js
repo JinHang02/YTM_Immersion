@@ -260,10 +260,15 @@ const normalizeSearchTrackTitle = (s, artist = '') => {
         // sliderKnobのrectを取得（ドラッグ中もリアルタイムで更新される）
         const knobRect = sliderKnob.getBoundingClientRect();
         const barRect = progressBar.getBoundingClientRect();
+        // 縦は線そのもの(#progressContainer)の中央に置く。シークバーの箱
+        // (32px)の中央は線の中央と同じとは限らず、乗せて線が 2px → 4px に
+        // 太る時は下へだけ太るので、丸が線より 1px 上に出ていた
+        const lineRect = progressBar.querySelector('#progressContainer')?.getBoundingClientRect();
+        const yRect = lineRect && lineRect.height > 0 ? lineRect : barRect;
 
         // knobの中心位置を計算（完全追従）
         const handleX = knobRect.left + knobRect.width / 2;
-        const handleY = barRect.top + barRect.height / 2;
+        const handleY = yRect.top + yRect.height / 2;
         const size = isDragging ? '16px' : '12px';
 
         const nextStyle = `${handleX}|${handleY}|${size}`;
