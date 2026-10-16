@@ -52,7 +52,7 @@
   display: none;
   overflow: hidden;
 
-  /* 繝�ヵ繧ｩ繝ｫ繝茨ｼ亥ｾ捺擂�峨�閭梧勹繧ｹ繧ｿ繧､繝ｫ: 蝓ｺ譛ｬ縺ｯ譏主ｺｦ繝ｻ蠖ｩ蠎ｦ縺ｮ隱ｿ謨ｴ縺ｮ縺ｿ縺ｧ縲；PU雋�闕ｷ縺ｮ髱槫ｸｸ縺ｫ螟ｧ縺阪＞CSS blur縺ｯ辟｡蜉ｹ蛹� (JS蛛ｴ縺ｧ莠句燕縺ｼ縺九＠蜃ｦ逅�ｒ螳滓命) */
+  /* ?ォルト（従来??背景スタイル: 基本は明度・彩度の調整のみで、GPU?荷の非常に大きいCSS blurは無効? (JS側で事前ぼかし処?実施) */
   filter: brightness(calc(var(--ytm-bg-brightness, 0.65) * var(--ytm-bg-art-dim, 1))) saturate(140%);
   transform: scale(1.1);
   will-change: transform;
@@ -272,6 +272,17 @@ body.ytm-custom-layout .side-panel:not([data-ytmi-bar-path]) {
   pointer-events: none !important;
 }
 
+/* 見えないだけの YTM の中身は、描く準備ごと飛ばす。visibility:hidden では
+   レイアウトも IntersectionObserver の判定も毎フレーム続いていた。
+   右の欄(次の曲・歌詞・関連。2000 要素ほど)が大きく、歌詞を塗る間は
+   これがフレームごとの重さになっていた(実測: 動画モードでメインスレッド
+   −15%、単語同期の曲モードで −8%)。要素とデータは残るので、Immersion の
+   キュー(ytmusic-player-queue-item を読む)は変わらない(実機で確かめた)。
+   映像の入っている #main-panel は対象にしない。 */
+body.ytm-custom-layout :is(.side-panel, #browse-page):not([data-ytmi-bar-path]) {
+  content-visibility: hidden;
+}
+
 /* プレイヤーバーの祖先(player-bar.js が data-ytmi-bar-path を付ける)。
    YTM がバーを上の隠す対象の中へ移しても、バーごと消えないようにする。
    ・透明にはしない(opacity は子で打ち消せない)。隠すのは visibility だけにし、
@@ -486,15 +497,22 @@ body.ytm-custom-layout ytmusic-nav-bar ytmusic-search-box[is-mobile-view]:is([op
   margin: 0 auto !important;
 }
 
-body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-player#player.style-scope.ytmusic-player-page.moviemode {
-  position: absolute !important;
-  width: 100%;
-  height: 100%;
-  z-index: -1;
+/* 動画モードの映像。ytmusic-player は YTM の置いた場所のまま(lyrics-ui.js の
+   markMoviePlayerPath)、映像の入った 1 つに印(data-ytmi-movie-player)を付けて
+   画面いっぱいに出す。祖先(Immersion が隠している YTM の画面)は
+   data-ytmi-video-path の印で、透明と変形だけを外す(このファイルの最後)。 */
+body.ytm-custom-layout ytmusic-player[data-ytmi-movie-player] {
+  position: fixed !important;
   top: 0;
   left: 0;
-  pointer-events: none;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
   margin: 0 !important;
+  transform: none !important;
+  visibility: visible !important;
+  pointer-events: none;
 }
 
 body.ytm-custom-layout div#ytm-custom-wrapper ytmusic-av-toggle {
@@ -540,9 +558,26 @@ body.ytm-custom-layout .video-button.ytmusic-av-toggle {
   height: 38px !important;
 }
 
+/* MV の無い曲(toggle-disabled があって selected-item-has-video が無い)の「動画」は
+   押せないことが分かるように薄くする。押下は lyrics-ui.js の avToggleHasNoVideo で止める */
+body.ytm-custom-layout ytmusic-av-toggle[toggle-disabled]:not([selected-item-has-video]) .video-button.ytmusic-av-toggle {
+  opacity: 0.35;
+  cursor: default !important;
+}
+
+/* 選ばれている方を白い字・明るい下地にする。以前は下地をわずかに暗くする
+   だけで、字はどちらも YTM の 0.3 の白のままだったので、今どちらなのかが
+   ほとんど分からなかった */
+body.ytm-custom-layout .song-button.ytmusic-av-toggle,
+body.ytm-custom-layout .video-button.ytmusic-av-toggle {
+  color: rgba(255, 255, 255, 0.55) !important;
+  border-radius: 999px;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
 body.ytm-custom-layout ytmusic-av-toggle[playback-mode=OMV_PREFERRED] .video-button.ytmusic-av-toggle,
 body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-button.ytmusic-av-toggle {
-  background-color: rgba(0, 0, 0, 0.3) !important;
+  background-color: rgba(255, 255, 255, 0.16) !important;
+  color: #fff !important;
 }
 
 #ytm-custom-left-col {
@@ -561,11 +596,60 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   transition: transform 0.5s ease;
 }
 
+/* 動画モードの曲名とアーティスト名。置き方・大きさ・字・影は YT-Immersion の MV モード
+   (#mv-info-area: 左 60px・下 80px / 曲名 42px・太さ 800・影 0 2px 10px / アーティスト
+   18px・太さ 500・大文字)と同じにする。YT-Immersion には下に操作バーが無いので、
+   バーが出ている間は曲名と歌詞の帯をいっしょにバーの高さ(--ytm-movie-bar-lift)だけ
+   持ち上げる。曲名と歌詞の位置関係は、バーの有無に関係なく YT-Immersion と同じ。
+   幅は右下の歌詞の帯(left: 40%)に掛からない所まで。
+   この欄に pointer-events: none を付けてはいけない。曲/動画の切り替えと左上の
+   ボタン列も同じ欄の子(位置は fixed で外にある)なので受け継いで押せなくなる。 */
 #ytm-custom-left-col.moviemode {
+  position: fixed;
+  left: 60px;
+  top: auto;
+  bottom: calc(80px + var(--ytm-movie-bar-lift, 0px));
+  width: calc(40% - 84px);
+  max-width: none;
+  text-align: left;
+  transform: none;
+}
+
+#ytm-custom-left-col.moviemode #ytm-custom-info-area {
+  align-items: flex-start;
+  padding: 0;
+}
+
+#ytm-custom-left-col.moviemode :is(#ytm-custom-title, #ytm-custom-artist) {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Hiragino Kaku Gothic ProN", "Hiragino Sans", sans-serif;
+}
+
+#ytm-custom-left-col.moviemode #ytm-custom-title {
+  font-size: calc(42px * var(--ytm-ui-scale));
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+}
+
+#ytm-custom-left-col.moviemode #ytm-custom-artist {
+  font-size: calc(18px * var(--ytm-ui-scale));
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+  text-shadow: none;
+}
+
+/* 取得元の表示は曲名の上に浮かせる。下に並べると欄の下端が表示の分だけ下がり、
+   曲名の位置が YT-Immersion とずれる */
+#ytm-custom-left-col.moviemode #ytm-lyrics-source-debug.ytm-source-inline {
   position: absolute;
-  left: 2%;
-  top: 75%;
-  transform-origin: bottom;
+  left: 0;
+  bottom: 100%;
+  margin: 0 0 calc(12px * var(--ytm-ui-scale));
 }
 
 #ytm-artwork-container {
@@ -648,12 +732,6 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   text-wrap: balance;
 }
 
-#ytm-custom-title.inactive.moviemode {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
-
 #ytm-custom-artist {
   font-size: calc(20px * var(--ytm-ui-scale));
   font-weight: 600;
@@ -664,11 +742,6 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   visibility: visible;
 }
 
-#ytm-custom-artist.inactive.moviemode {
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-}
 
 
 #ytm-btn-area {
@@ -744,6 +817,30 @@ body.ytm-no-lyrics #ytm-btn-area .ytm-lyric-card-btn {
   opacity: 0.4;
 }
 
+/* 画質は動画モードの時だけ選べる(曲モードの映像はジャケットの静止画) */
+#ytm-btn-area:not(.moviemode) .ytm-quality-btn,
+#ytm-btn-area:not(.moviemode) .ytm-quality-menu {
+  display: none;
+}
+
+.ytm-quality-menu {
+  min-width: 180px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+}
+
+.ytm-quality-item.is-selected {
+  font-weight: 700;
+}
+
+/* 動画モードのボタン列は position: fixed で、それ自体が重なりの単位になる。
+   中のメニューの z-index はその中でしか効かず、歌詞ソースの表示
+   (#ytm-lyrics-source-debug, z-index 2999)がメニューの上に出ていた(実機)。
+   メニューを開いている間だけ、列ごと上げる */
+#ytm-btn-area:has(> .ytm-upload-menu.visible) {
+  z-index: 3000;
+}
+
 .ytm-glass-btn {
   padding: calc(8px * var(--ytm-ui-scale)) calc(16px * var(--ytm-ui-scale));
   background: rgba(255, 255, 255, 0.15);
@@ -803,7 +900,7 @@ body.ytm-no-lyrics #ytm-btn-area .ytm-lyric-card-btn {
   transform: translate(-50%, -50%) scale(1) translateY(0);
 }
 
-/* --- 蟾ｦ蛛ｴ�壹ち繝悶リ繝薙ご繝ｼ繧ｷ繝ｧ繝ｳ --- */
+/* --- 左側?タブナビゲーション --- */
 .settings-tabs {
   width: 232px;
   background: rgba(0, 0, 0, 0.25);
@@ -899,38 +996,6 @@ body.ytm-no-lyrics #ytm-btn-area .ytm-lyric-card-btn {
   gap: 10px;
 }
 
-.settings-save-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 13px;
-  border: none;
-  border-radius: 12px;
-  font-size: 13.5px;
-  font-weight: 700;
-  color: #fff;
-  cursor: pointer;
-  background: linear-gradient(135deg, #ff2d55, #c81e3f);
-  box-shadow: 0 6px 18px rgba(255, 45, 85, 0.32);
-  transition: transform 0.15s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.15s ease, filter 0.15s ease;
-}
-
-.settings-save-btn:hover {
-  filter: brightness(1.08);
-  box-shadow: 0 8px 22px rgba(255, 45, 85, 0.42);
-}
-
-.settings-save-btn:active {
-  transform: scale(0.97);
-}
-
-.settings-save-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
 .settings-version {
   text-align: center;
   font-size: 10.5px;
@@ -940,7 +1005,7 @@ body.ytm-no-lyrics #ytm-btn-area .ytm-lyric-card-btn {
   font-variant-numeric: tabular-nums;
 }
 
-/* --- 蜿ｳ蛛ｴ�壹さ繝ｳ繝�Φ繝�お繝ｪ繧｢ --- */
+/* --- 右側?コン??リア --- */
 .settings-panels {
   flex: 1;
   display: flex;
@@ -1046,7 +1111,7 @@ body.ytm-no-lyrics #ytm-btn-area .ytm-lyric-card-btn {
   height: 14px;
 }
 
-/* 繧ｹ繧ｯ繝ｭ繝ｼ繝ｫ繧ｨ繝ｪ繧｢ */
+/* スクロールエリア */
 .settings-scroll-area {
   padding: 12px 30px 30px;
   overflow-y: auto;
@@ -1948,7 +2013,7 @@ body.ytm-custom-layout.ytm-no-lyrics #ytm-meaning-panel {
      行頭・行末の空白が畳まれるので、折り返しても字下げが起きない。 */
   white-space: pre-line;
 
-  /* GPU蜷域�繝ｬ繧､繝､繝ｼ縺ｫ逋ｻ骭ｲ縺励※繧ｹ繧ｯ繝ｭ繝ｼ繝ｫ縺ｨ螟牙ｽ｢譎ゅ�蜀阪Λ繧ｹ繧ｿ繝ｩ繧､繧ｺ繧帝∩縺代ｋ */
+  /* GPU合?レイヤーに登録してスクロールと変形時?再ラスタライズを避ける */
   will-change: transform, opacity;
 }
 
@@ -2011,7 +2076,7 @@ body.ytm-custom-layout.ytm-singer-colors-enabled:not(.ytm-no-timestamp) #my-lyri
 body.ytm-custom-layout.ytm-animated-caption-mode #my-lyrics-container {
   position: relative;
   --ytm-animated-font-scale: 0.5;
-  /* 讓ｪ荳ｦ縺ｳ繝ｬ繧､繧｢繧ｦ繝域凾縺ｮ讓ｪ蟷�宛髯撰ｼ亥ｷｦ繧ｫ繝ｩ繝� 400px 縺ｨ gap 8vw 縺ｨ padding 10vw 繧定��縺励√ｆ縺ｨ繧翫ｒ謖√◆縺帙ｋ�� */
+  /* 横並びレイアウト時の横?限（左カラ? 400px と gap 8vw と padding 10vw を??し、ゆとりを持たせる?? */
   --ytm-animated-width: min(calc(80vw - 420px), calc(65vh * 16 / 9));
   width: var(--ytm-animated-width);
   height: calc(var(--ytm-animated-width) * 9 / 16);
@@ -2019,10 +2084,10 @@ body.ytm-custom-layout.ytm-animated-caption-mode #my-lyrics-container {
   overflow: hidden;
   mask-image: none;
 
-  /* Flexbox縺ｫ繧医ｋ蠑ｷ蛻ｶ逧�↑邵ｮ蟆上ｒ髦ｲ豁｢縺励※繧｢繧ｹ繝壹け繝域ｯ斐ｒ蝗ｺ螳� */
+  /* Flexboxによる強制?縮小を防止してアスペクト比を固? */
   flex-shrink: 0;
 
-  /* 繧ｳ繝ｳ繝�リ繧ｯ繧ｨ繝ｪ繧呈怏蜉ｹ蛹悶＠縺ｦ縲∽ｸｭ縺ｮ繝輔か繝ｳ繝医し繧､繧ｺ繧偵さ繝ｳ繝�リ縺ｮ蟷�↓騾｣蜍輔＆縺帙ｋ�亥ｹ��縺ｿ縺ｮ蜿ら�縺ｮ縺溘ａ inline-size 繧呈欠螳夲ｼ� */
+  /* コン?クエリを有効化して、中のフォントサイズをコン?の?連動させる???みの参?のため inline-size を指定? */
   container-type: inline-size;
 }
 
@@ -2050,7 +2115,7 @@ body.ytm-custom-layout.ytm-animated-caption-mode #my-lyrics-container {
      CSS animation は inline の opacity/transform を上書きするため付けない。 */
   will-change: opacity, transform;
 
-  /* 蝓ｺ貅門ｹ� 800px 縺ｫ蟇ｾ縺吶ｋ繧ｳ繝ｳ繝�リ縺ｮ迴ｾ蝨ｨ蟷� (100cqw) 縺ｮ豈皮紫縺ｧ繝輔か繝ｳ繝医し繧､繧ｺ繧�3蛟阪↓繧ｹ繧ｱ繝ｼ繝ｫ */
+  /* 基準? 800px に対するコン?の現在? (100cqw) の比率でフォントサイズ?3倍にスケール */
   font-size: 48px;
 }
 
@@ -2067,8 +2132,10 @@ body.ytm-custom-layout #my-lyrics-container .lyric-line.lyric-completed {
   z-index: 6;
 }
 
+/* 動画モードの今の行は、曲名と同じ真っ白にする。以前は 0.8 の白で、
+   曲名と並ぶと灰色がかって見えた(実機) */
 .lyric-line.active.moviemode {
-  color: rgba(255, 255, 255, 0.8);
+  color: #fff;
 }
 
 .lyric-translation {
@@ -2124,7 +2191,7 @@ body.ytm-custom-layout.ytm-apple-sync .lyric-line .lyric-bg.ytm-bg-sync {
   --feather: 8;
 }
 
-/* 繧ｿ繧､繝�繧ｹ繧ｿ繝ｳ繝玲怏繧頑凾縺ｮ鄙ｻ險ｳ繧｢繝九Γ */
+/* タイ?スタンプ有り時の翻訳アニメ */
 body.ytm-custom-layout.ytm-has-timestamp .lyric-line .lyric-translation {
   opacity: 0;
   max-height: 0;
@@ -2139,7 +2206,7 @@ body.ytm-custom-layout.ytm-has-timestamp .lyric-line.show-translation .lyric-tra
   margin-top: 6px;
 }
 
-/* 1譁�ｭ励★縺､蜈峨ｋ */
+/* 1?ずつ光る */
 body.ytm-custom-layout .lyric-line .lyric-char {
   display: inline-block;
   transition: color 0.12s linear, transform 0.12s linear, text-shadow 0.12s linear, opacity 0.12s linear;
@@ -2285,7 +2352,7 @@ body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync:not(.active) .ly
   line-height: 1.5;
 }
 
-/* 繧ｿ繧､繝�繧ｹ繧ｿ繝ｳ繝礼┌縺玲ｭ瑚ｩ� */
+/* タイ?スタンプ無し歌? */
 body.ytm-custom-layout.ytm-no-timestamp .lyric-line {
   color: #fff;
   transform: scale(1);
@@ -2295,7 +2362,7 @@ body.ytm-custom-layout.ytm-no-timestamp .lyric-line {
   text-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
 }
 
-/* Loading / 豁瑚ｩ槭↑縺� */
+/* Loading / 歌詞な? */
 .lyric-loading {
   display: flex;
   flex-direction: column;
@@ -2310,13 +2377,13 @@ body.ytm-custom-layout.ytm-no-timestamp .lyric-line {
   text-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
 }
 
-/* 繝昴ャ繝励い繝��縺ｮ z-index */
+/* ポップア??の z-index */
 body.ytm-custom-layout ytmusic-popup-container,
 body.ytm-custom-layout ytmusic-popup-container tp-yt-iron-dropdown {
   z-index: 3000 !important;
 }
 
-/* 繝励Ξ繧､繝､繝ｼ繝舌�蜈ｨ菴� */
+/* プレイヤーバ?全? */
 body.ytm-custom-layout ytmusic-player-bar {
   position: fixed !important;
   bottom: 40px !important;
@@ -3000,7 +3067,7 @@ body.ytm-custom-layout ytmusic-miniplayer[data-ytmi-bar-tight] {
   }
 }
 
-/* 蟾ｦ蛛ｴ繧ｳ繝ｳ繝医Ο繝ｼ繝ｫ */
+/* 左側コントロール */
 body.ytm-custom-layout .left-controls {
   flex: 0 0 auto !important;
   justify-content: flex-start !important;
@@ -3016,12 +3083,12 @@ body.ytm-custom-layout ytmusic-player-bar > .left-controls {
   min-width: min-content !important;
 }
 
-/* 荳ｭ螟ｮ蛛ｴ縺ｮ蜀咲函繝懊ち繝ｳ繧帝國縺� */
+/* 中央側の再生ボタンを隠? */
 body.ytm-custom-layout ytmusic-player-bar .middle-controls ytmusic-play-button-renderer {
   display: none !important;
 }
 
-/* 荳ｭ螟ｮ繧ｨ繝ｪ繧｢�壹す繝ｼ繧ｯ繝舌�荳ｭ蠢� */
+/* 中央エリア?シークバ?中? */
 body.ytm-custom-layout .middle-controls {
   flex: 1 1 auto !important;
   /* min-width:0 がないと、シークバー+時間表示の最小内容幅より縮まず、
@@ -3038,7 +3105,7 @@ body.ytm-custom-layout .middle-controls {
   position: relative !important;
 }
 
-/* 繝帙ヰ繝ｼ縺励◆縺ｨ縺阪�譎る俣陦ｨ遉ｺ */
+/* ホバーしたとき?時間表示 */
 body.ytm-custom-layout #hover-time-info-new, body.ytm-custom-layout .ytMusicMiniPlayerHoverTimeInfo {
   font-family: Roboto, Noto Naskh Arabic UI, Arial, sans-serif !important;
   font-size: var(--ytmusic-caption-1-font-size) !important;
@@ -3058,12 +3125,12 @@ body.ytm-custom-layout #hover-time-info-new, body.ytm-custom-layout .ytMusicMini
 body.ytm-custom-layout .ytMusicMiniPlayerHoverTimeInfo {
   transform: translate3d(-50%, -200%, 0) !important;
 }
-/* 繝励Ξ繧､繝､繝ｼ繝舌�蜀��譖ｲ諠��ｱ縺ｯ菴ｿ繧上↑縺� */
+/* プレイヤーバ???曲??は使わな? */
 body.ytm-custom-layout .content-info-wrapper .style-scope {
   display: none !important;
 }
 
-/* 蜿ｳ蛛ｴ繧ｳ繝ｳ繝医Ο繝ｼ繝ｫ */
+/* 右側コントロール */
 body.ytm-custom-layout ytmusic-player-bar .right-controls {
   display: flex !important;
   align-items: center !important;
@@ -3074,7 +3141,7 @@ body.ytm-custom-layout ytmusic-player-bar .right-controls {
   flex-wrap: nowrap !important;
 }
 
-/* 繝懊ち繝ｳ繝ｻ繝�く繧ｹ繝医�濶ｲ */
+/* ボタン・?スト?色 */
 body.ytm-custom-layout ytmusic-player-bar tp-yt-iron-icon,
 body.ytm-custom-layout ytmusic-player-bar .time-info,
 body.ytm-custom-layout ytmusic-player-bar button:not(#my-mode-toggle) {
@@ -3083,7 +3150,7 @@ body.ytm-custom-layout ytmusic-player-bar button:not(#my-mode-toggle) {
   opacity: 1 !important;
 }
 
-/* IMMERSION 繝医げ繝ｫ繝懊ち繝ｳ */
+/* IMMERSION トグルボタン */
 #my-mode-toggle {
   padding: 4px 10px;
   font-size: 11px;
@@ -3099,37 +3166,11 @@ body.ytm-custom-layout ytmusic-player-bar .right-controls #my-mode-toggle {
   order: 20;
 }
 
-/* 髻ｳ驥上�繝ｪ繝斐�繝医�繧ｷ繝｣繝�ヵ繝ｫ縺ｪ縺ｩ */
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="髻ｳ驥�"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="繝溘Η繝ｼ繝�"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="volume"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="Volume"] {
-  order: 21;
-  margin-left: 2px;
-}
+/* 音量・リピート・シャッフル・メニューの並び順は YTM のままにする。
+   以前は aria-label(表示言語の文字)で順番を付けていたが、日本語の文字が
+   文字化けしていて日本語では効かず、英語でだけ並びが変わっていた。 */
 
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="繝ｪ繝斐�繝�"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="郢ｰ繧願ｿ斐＠"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="repeat"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="Repeat"] {
-  order: 22;
-}
-
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="繧ｷ繝｣繝�ヵ繝ｫ"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="繧ｷ繝｣繝�ヵ繝ｫ蜀咲函"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="shuffle"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls ytmusic-toggle-button-renderer[aria-label*="Shuffle"] {
-  order: 23;
-}
-
-body.ytm-custom-layout ytmusic-player-bar .right-controls tp-yt-paper-icon-button[aria-label*="繝｡繝九Η繝ｼ"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls tp-yt-paper-icon-button[aria-label*="縺昴�莉�"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls tp-yt-paper-icon-button[aria-label*="More"],
-body.ytm-custom-layout ytmusic-player-bar .right-controls tp-yt-paper-icon-button[aria-label*="menu"] {
-  order: 24;
-}
-
-/* 蜀咲函菴咲ｽｮ繧ｹ繝ｩ繧､繝繝ｼ */
+/* 再生位置スライダー */
 body.ytm-custom-layout ytmusic-player-bar .middle-controls tp-yt-paper-slider#progress-bar {
   order: 3;
   flex: 1 1 auto !important;
@@ -3154,15 +3195,17 @@ body.ytm-custom-layout ytmusic-player-bar tp-yt-paper-slider#progress-bar [role=
   box-sizing: border-box !important;
 }
 
-/* 蜀咲函繧ｳ繝ｳ繝医Ο繝ｼ繝ｫ蜀��繧ｵ繝�繝阪う繝ｫ */
+/* 再生コントロール??サ?ネイル */
 body.ytm-custom-layout ytmusic-player-bar .thumbnail-image-wrapper {
   display: none !important;
 }
 
 
-/* 髱 Immersion 繝｢繝ｼ繝 */
+/*  Immersion モー */
 body:not(.ytm-custom-layout) ytmusic-miniplayer, body:not(.ytm-custom-layout) ytmusic-player-bar {
-  background: rgba(20, 20, 20, 0.8) !important;
+  /* ぼかし(backdrop-filter)は重さのために外してあるので、ほぼ不透明にする。
+     0.8 のままだと、下を流れる一覧の文字がバー越しに透けて読めていた */
+  background: rgba(22, 22, 24, 0.94) !important;
   /* backdrop-filter: blur(20px) saturate(180%) !important; */
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
   border-radius: 16px !important;
@@ -3299,7 +3342,7 @@ ytmusic-app-layout>#content {
   height: 100dvh !important;
 }
 
-/* 繝槭Ν繝√�繝ｼ繧ｸ繝｡繝九Η繝ｼ */
+/* マルチ?ージメニュー */
 ytmusic-multi-page-menu-renderer {
   border-radius: 20px !important;
   background: rgba(30, 30, 30, 0.95) !important;
@@ -3313,14 +3356,14 @@ ytmusic-notification-text-renderer #toast.ytmusic-notification-text-renderer {
   color: #fff !important;
 }
 
-/* 谺｡縺ｫ蜀咲函縺ｪ縺ｩ縺ｮ繝医�繧ｹ繝� */
+/* 次に再生などのト?ス? */
 tp-yt-paper-toast.style-scope {
   background: rgba(30, 30, 30, 0.9) !important;
   /* backdrop-filter: blur(20px) saturate(180%) !important; */
   border: 1px solid rgba(255, 255, 255, 0.10) !important;
   border-radius: 10px !important;
   transform: translateY(0px) !important;
-  /* 荳九°繧我ｸ翫↓陦後￥繧｢繝九Γ繝ｼ繧ｷ繝ｧ繝ｳ繧偵が繝ｼ繝舌�繝ｩ繧､繝� */
+  /* 下から上に行くアニメーションをオーバ?ライ? */
   margin-top: -20px !important;
   left: 1vh !important;
 }
@@ -3330,7 +3373,7 @@ body.ytm-custom-layout tp-yt-paper-toast.style-scope {
   left: 7.5vh !important;
 }
 
-/* 3轤ｹ繝｡繝九Η繝ｼ繝昴ャ繝励い繝�� */
+/* 3点メニューポップア?? */
 tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   border-radius: 10px !important;
   --paper-listbox-background-color: rgba(30, 30, 30, 0.95) !important;
@@ -3338,7 +3381,7 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   border: 1px solid rgba(255, 255, 255, 0.10) !important;
 }
 
-/* Lyrics繧｢繝��繝ｭ繝ｼ繝峨Γ繝九Η繝ｼ */
+/* Lyricsア??ロードメニュー */
 .ytm-upload-menu {
   position: absolute;
   bottom: 52px;
@@ -3516,7 +3559,7 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* 豁瑚ｩ槫炎髯､繝繧､繧｢繝ｭ繧ｰ */
+/* 歌詞削除ダイアログ */
 .ytm-confirm-dialog {
   position: absolute;
   bottom: 52px;
@@ -3589,7 +3632,7 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   background: rgba(255, 61, 80, 1);
 }
 
-/* 邵ｦ逕ｻ髱｢繝ｬ繧､繧｢繧ｦ繝� */
+/* 縦画面レイアウ? */
 /* ── 狭い画面(縦積み) ──────────────────────────────────────
    切り替えは「向き」ではなく「幅」で見る。orientation だと、横長でも狭い窓
    (800x700 など)は横並びのまま潰れ、幅の広い縦長窓(1200x1400 など)は
@@ -3757,14 +3800,16 @@ tp-yt-paper-listbox.ytmusic-menu-popup-renderer {
   }
 
   /* 取得元バッジをボタン列の下に流すと、それだけで 1 段ぶん縦を食う。
-     狭い画面では隅に戻す(出るのは手を動かした時だけなので邪魔にならない)。 */
+     ボタン列と同じ段の右端に置く(ボタン列は左寄せで、右には空きがある)。
+     以前は左下の隅に固定していたが、プレイヤーバーを隠している時は
+     歌詞の上に重なっていた。 */
   body.ytm-custom-layout #ytm-lyrics-source-debug.ytm-source-inline {
-    position: fixed;
-    left: 12px;
-    bottom: calc(24px + (80px * var(--ytm-ui-scale, 1)) + 8px);
+    position: static;
+    grid-area: btns;
+    justify-self: end;
+    align-self: center;
     margin: 0;
-    align-self: auto;
-    max-width: calc(100vw - 24px);
+    max-width: 42%;
   }
 
   /* ── 歌詞 ──────────────────────────────────────────────
@@ -5090,7 +5135,7 @@ a.settings-link-btn svg {
 }
 
 
-/* 繧ｯ繝ｩ繧ｦ繝峨す繝ｳ繧ｯ縺ｮ繧�▽ */
+/* クラウドシンクの? */
 
 .dr-cloud-sync-btn.cloud-ok .dr-cloud-emoji {
   color: #22c55e;
@@ -5201,7 +5246,7 @@ ytmusic-player-bar .middle-controls tp-yt-paper-slider::before {
   bottom: -12px;
 }
 
-/* 繝励Ο繧ｰ繝ｬ繧ｹ繝舌�霑ｽ蜉�險ｭ螳夲ｼ郁ｧ剃ｸｸ縺ｮ蜀��縺ｫ蜿弱ａ繧具ｼ� */
+/* プログレスバ?追?設定（角丸の??に収める? */
 body.ytm-custom-layout ytmusic-player-bar tp-yt-paper-slider#progress-bar {
   overflow: visible !important;
   height: 32px !important;
@@ -5301,7 +5346,7 @@ body.ytm-singer-colors-enabled .lyric-line[data-singer-color] {
   color: var(--ytm-singer-color);
 }
 
-/* 蟾ｦ荳翫�繝上Φ繝舌�繧ｬ繝ｼ繝｡繝九Η繝ｼ繧帝撼陦ｨ遉ｺ縺ｫ縺吶ｋ */
+/* 左上?ハンバ?ガーメニューを非表示にする */
 body.ytm-custom-layout ytmusic-nav-bar .left-content>tp-yt-paper-icon-button,
 body.ytm-custom-layout ytmusic-nav-bar .left-content #guide-button {
   display: none !important;
@@ -5535,7 +5580,7 @@ body.ytm-align-left #ytm-custom-left-col {
 body.ytm-align-left #ytm-custom-info-area {
   align-items: flex-start;
   padding: 0;
-  /* 蟾ｦ遶ｯ縺ｫ蟇�○繧九◆繧√↓繝代ョ繧｣繝ｳ繧ｰ繧定ｪｿ謨ｴ */
+  /* 左端に?るためにパディングを調整 */
 }
 
 body.ytm-align-left #ytm-custom-title {
@@ -6002,7 +6047,8 @@ body.ytm-custom-layout.ytm-lyric-card-selecting #my-lyrics-container .lyric-line
   align-items: center;
   gap: calc(12px * var(--ytm-ui-scale, 1));
   width: max-content;
-  max-width: min(calc(100vw - 32px), 100%);
+  /* 歌詞の欄より広くてよい(欄の幅に収めると、説明が「（最大…」で切れていた) */
+  max-width: min(calc(100vw - 32px), max(100%, 560px));
   padding: calc(8px * var(--ytm-ui-scale, 1)) calc(8px * var(--ytm-ui-scale, 1)) calc(8px * var(--ytm-ui-scale, 1)) calc(18px * var(--ytm-ui-scale, 1));
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
@@ -6090,3 +6136,458 @@ body.ytm-korean-ruby .lyric-main [data-ruby] {
   text-align: center;
 }
 
+
+/* Chrome 内蔵の翻訳: 言語データを落とすボタン(builtin-translate.js)。
+   落とし始めはクリックの中でしかできないので、訳せない言語がある曲で出す。
+   Immersion を閉じている間は歌詞が見えないので出さない。 */
+#ytm-trans-dl {
+  position: fixed;
+  left: 50%;
+  /* プレイヤーバー(下から 120px ほど)のシークバーに掛からない高さ */
+  bottom: 136px;
+  z-index: 999998;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 8px 8px 8px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12.5px;
+  line-height: 1.4;
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+}
+
+body.ytm-custom-layout #ytm-trans-dl.visible {
+  display: flex;
+}
+
+.ytm-trans-dl-btn {
+  flex: none;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ytm-trans-dl-btn[hidden] {
+  display: none;
+}
+
+/* 翻訳タブの「詳細設定」。共有翻訳・メイン言語・DeepL のキーをしまっておく。 */
+.settings-advanced {
+  margin-bottom: 26px;
+}
+
+.settings-advanced > .settings-advanced-summary {
+  margin: 6px 0 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-advanced > .settings-advanced-summary:hover {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.settings-advanced > .settings-group-card {
+  margin-bottom: 0;
+}
+
+/* 操作バーの出し入れの動き。自動で隠す時(bar-autohide.js の ytm-bar-peek)と、
+   動画モードで操作が無い時(YTM の inactive)に、薄れながら少し下がる。
+   YTM のバーには読み込み時のせり上がり(player-bar-slide-up、終わった後も
+   最後の形を保つ)が残っていて、それが掛かっている濃さは transition で
+   補間されず、一瞬で消えていた(実機)。Immersion の間はその動きを外す。 */
+body.ytm-custom-layout [data-ytmi-bar] {
+  animation: none !important;
+}
+
+body.ytm-custom-layout :is([data-ytmi-bar], #ytmi-fallback-bar) {
+  transition: opacity 0.3s ease, visibility 0.3s, translate 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+}
+
+body.ytm-custom-layout.ytm-bar-autohide:not(.ytm-bar-peek) :is([data-ytmi-bar], #ytmi-fallback-bar),
+body.ytm-custom-layout :is(ytmusic-player-bar, ytmusic-miniplayer).inactive.moviemode {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  translate: 0 24px;
+}
+
+/* Apple Music 風の背景(fluid-bg.js、WebGL)。描いている間は ytm-fluid-bg が付く。
+   以前の背景(ぼかした画像を 2 枚回す・明るさの filter)は止めて、canvas だけを
+   引き伸ばして出す。明るさは canvas の中で掛けてある。
+   WebGL が使えない時・軽量モード・動画モードでは付かず、以前の背景のまま。 */
+#ytm-fluid-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+}
+
+body.ytm-custom-layout.ytm-fluid-bg #ytm-fluid-bg {
+  display: block;
+}
+
+body.ytm-custom-layout.ytm-fluid-bg #ytm-custom-bg {
+  filter: none !important;
+  transform: none !important;
+  animation: none !important;
+  background-image: none !important;
+  will-change: auto !important;
+}
+
+body.ytm-custom-layout.ytm-fluid-bg #ytm-custom-bg::before,
+body.ytm-custom-layout.ytm-fluid-bg #ytm-custom-bg::after {
+  display: none !important;
+  animation: none !important;
+}
+
+/* 動画モードでは背景は映像の下に隠れる。Apple Music 風の背景(WebGL)は
+   止めていたが、その代わりに以前の CSS の背景(画面の 2 倍角の 2 枚を回す)が
+   映像の下で動き続け、見えないのに画面全体の合成を起こしていた(実測)。
+   動かさず、2 枚も出さない。左右の黒帯から見える所は止まった 1 枚で足りる。 */
+body.ytm-custom-layout.ytm-movie-mode #ytm-custom-bg {
+  animation: none !important;
+  will-change: auto !important;
+}
+body.ytm-custom-layout.ytm-movie-mode #ytm-custom-bg::before,
+body.ytm-custom-layout.ytm-movie-mode #ytm-custom-bg::after {
+  display: none !important;
+  animation: none !important;
+}
+
+/* 動画モードで歌詞を映像に重ねる(設定、既定 入。body.ytm-movie-lyrics)。
+   YT-Immersion の MV モードと同じ置き方: 映像は全画面、歌詞は右下の帯に右揃え。
+   映像の下側に暗いグラデーションを敷いて、明るい映像でも読めるようにする。
+   帯の高さは 40vh。今の行は帯の真ん中に寄せる(JS は clientHeight/2 を基準に
+   している)ので、上下の余白は帯の高さの半分(20vh)にして、最初と最後の行も
+   真ん中まで来られるようにする。 */
+body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #ytm-lyrics-stage.moviemode {
+  display: block !important;
+  position: fixed;
+  /* YT-Immersion の #mv-lyrics-area と同じ: 左 40%・右 60px・下 60px・高さ 40vh(画面の 2/5)。
+     バーが出ている間は曲名といっしょに持ち上げる(--ytm-movie-bar-lift) */
+  left: 40%;
+  right: 60px;
+  bottom: calc(60px + var(--ytm-movie-bar-lift, 0px));
+  height: 40vh;
+  max-width: none;
+  transform: none;
+  z-index: 2;
+}
+
+body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #my-lyrics-container.moviemode {
+  display: block !important;
+  padding-top: 20vh;
+  padding-bottom: 20vh;
+  padding-right: 0;
+  text-align: right;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 25%, #000 75%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 25%, #000 75%, transparent 100%);
+}
+
+body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line {
+  transform-origin: right;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
+/* 歌手の情報がある曲(LRCHub)は、通常の画面では奇数の歌手を左・偶数を右に
+   振り分ける(.singer-odd / .singer-even)。動画モードの帯は右下の細い帯なので、
+   左に振られた行は帯の中ほどから始まり、拡大(右端が基準)で帯の左へはみ出して
+   頭の字が切れていた(実機)。動画モードでは全部の行を右揃えにする。歌手の色は残る。 */
+body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line:is(.singer-odd, .singer-even),
+body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line :is(.lyric-main, .lyric-singer-name, .lyric-bg) {
+  text-align: right;
+}
+
+body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line:is(.singer-odd, .singer-even) {
+  padding-left: 0;
+  padding-right: 0;
+  transform-origin: right;
+}
+
+/* 曲が変わった直後の Loading...。曲モード用の置き方(帯の幅いっぱいの中央、
+   高さ 80%)のままだと、右下の帯の中ほど=画面の真ん中寄りに出ていた。
+   歌詞の最初の行が来る所(帯の上の余白のすぐ下 = 今の行の位置)に、
+   歌詞と同じ揃え方で出す */
+body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-loading {
+  height: auto;
+  align-items: flex-end;
+  text-align: right;
+  /* 右の余白は歌詞の行(.lyric-line の padding-right)と同じ */
+  padding: 0 20px 0 0 !important;
+  font-size: 22px;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
+/* 暗いグラデーションは歌詞の帯の側に、画面の下いっぱいの擬似要素として付ける。
+   プレイヤーの ::after に付けると、中の映像(#movie_player)の z-index の方が
+   大きく、映像の下に回って見えなかった。帯はプレイヤーより手前にあるので、
+   その中で一番奥(z-index: -1)に置けば、映像の上・歌詞の下に来る。 */
+body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #ytm-lyrics-stage.moviemode::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 55vh;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, 0.52) 0%,
+    rgba(0, 0, 0, 0.34) 24%,
+    rgba(0, 0, 0, 0.14) 52%,
+    rgba(0, 0, 0, 0) 100%);
+}
+
+/* 動画モードで、MV の歌以外の場面(音源との対応表に無い所)では歌詞を薄くする
+   (ytm-movie-cut。lyrics-ui.js の applyMovieTime)。行は光らせていない。 */
+body.ytm-custom-layout.ytm-movie-cut #ytm-lyrics-stage.moviemode {
+  opacity: 0.25;
+  transition: opacity 0.6s ease;
+}
+
+body.ytm-custom-layout #ytm-lyrics-stage.moviemode {
+  transition: opacity 0.6s ease;
+}
+
+/* 設定の検索(lyrics-ui.js の applySettingsSearch)。検索中は全タブのパネルを並べ、
+   当てはまる行のあるパネルだけを、タブ名の小見出し付きで出す。 */
+.settings-search {
+  margin: 0 4px 14px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+  width: calc(100% - 8px);
+}
+
+.settings-search:focus {
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.settings-searching .settings-panel {
+  display: none;
+}
+
+.settings-searching .settings-panel.settings-search-hit {
+  display: block;
+  margin-bottom: 18px;
+}
+
+.settings-searching .settings-panel.settings-search-hit::before {
+  content: attr(data-search-title);
+  display: block;
+  margin: 0 0 8px 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.settings-searching .settings-tab-btn.active {
+  background: transparent;
+}
+
+.settings-search-miss {
+  display: none !important;
+}
+
+.settings-search-empty {
+  padding: 40px 8px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* 操作バーが隠れている間は、バーのために空けていた分を取らない。
+   ・動画モード: バーが出ている間だけ、曲名と歌詞の帯をバーの高さ(下 40px + 高さ 80px ×
+     UI サイズ)だけ持ち上げる。YTM が操作の無い間バーを隠す時は曲名に inactive が付く
+     (同じ時に付く)。bottom で動かす。translate を掛けると、中の position: fixed の部品
+     (曲/動画の切り替え・左上のボタン列・歌詞の帯の下の暗いグラデーション)の基準が
+     画面からその要素に変わり、ずれる・グラデーションが四角く切れる(実機)。
+   ・曲モード: 器の下の余白はバーの分(60px + 80px × UI サイズ)を取っている。バーを自動で
+     隠している間は上と同じにする。器は中身を上下の真ん中に置くので、バーが無い時と
+     同じ並びになる(画面ごとの実測で決めた値は使わない)。 */
+body.ytm-custom-layout #ytm-custom-wrapper {
+  --ytm-movie-bar-lift: calc(40px + 80px * var(--ytm-ui-scale));
+}
+
+body.ytm-custom-layout #ytm-custom-wrapper:has(#ytm-custom-title.inactive),
+body.ytm-custom-layout.ytm-bar-autohide:not(.ytm-bar-peek) #ytm-custom-wrapper {
+  --ytm-movie-bar-lift: 0px;
+}
+
+body.ytm-custom-layout.ytm-bar-autohide:not(.ytm-bar-peek) #ytm-custom-wrapper {
+  padding-bottom: calc(60px * var(--ytm-ui-scale));
+}
+
+body.ytm-custom-layout #ytm-custom-left-col.moviemode,
+body.ytm-custom-layout #ytm-lyrics-stage.moviemode,
+body.ytm-custom-layout.ytm-movie-cut #ytm-lyrics-stage.moviemode {
+  transition: opacity 0.6s ease, bottom 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* 動画モードを縦長・狭い窓で開いた時。横長の作り(映像を全面に映し、
+   曲名は左下・歌詞は右下の帯)のままだと、帯が細すぎて歌詞が右へはみ出し、
+   曲名が歌詞に重なっていた。映像を上に幅いっぱいで置き、その下に曲名、
+   残りを歌詞にする(スマートフォンの YouTube と同じ並び)。 */
+@media (max-aspect-ratio: 5/4) {
+  /* 映像(器の外にある)からも読めるよう body に置く */
+  body.ytm-custom-layout {
+    --ytm-mv-top: calc(16px + 56px * var(--ytm-ui-scale));
+    --ytm-mv-video-h: min(56.25vw, 42vh);
+    --ytm-mv-below: calc(var(--ytm-mv-top) + var(--ytm-mv-video-h) + 20px);
+  }
+  body.ytm-custom-layout ytmusic-player[data-ytmi-movie-player] {
+    top: var(--ytm-mv-top);
+    height: var(--ytm-mv-video-h) !important;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode {
+    display: block;
+    top: var(--ytm-mv-below);
+    bottom: auto;
+    left: 20px;
+    right: 20px;
+    width: auto;
+    max-width: none;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode #ytm-custom-info-area {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode #ytm-custom-title {
+    font-size: calc(26px * var(--ytm-ui-scale));
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode #ytm-custom-artist {
+    font-size: calc(14px * var(--ytm-ui-scale));
+  }
+  /* 曲名(最大 2 行)とアーティストの分だけ下げる。狭い窓ではバーの分を
+     いつも空ける(歌詞がバーに潜らないように)。高さは top/bottom 任せの auto に
+     せず数字で書く。auto だと中の歌詞の 100% が横長の時の 40vh で計算され、
+     今の行が帯の上の薄くなる所に来ていた */
+  body.ytm-custom-layout {
+    --ytm-mv-lyrics-top: calc(var(--ytm-mv-below) + 64px + 40px * var(--ytm-ui-scale));
+    --ytm-mv-lyrics-bottom: calc(64px + 80px * var(--ytm-ui-scale));
+    --ytm-mv-lyrics-h: max(120px, calc(100vh - var(--ytm-mv-lyrics-top) - var(--ytm-mv-lyrics-bottom)));
+  }
+  /* 横長の時の上下 20vh の余白は、この低い帯では帯より高くなる。今の行が
+     帯の 35% の所に来るよう(lyrics-ui.js のスクロール)、帯の高さから決める */
+  body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #my-lyrics-container.moviemode {
+    padding-top: calc(var(--ytm-mv-lyrics-h) * 0.35);
+    padding-bottom: calc(var(--ytm-mv-lyrics-h) * 0.65);
+    /* 帯が低いので、上の薄くする幅を詰める(今の行が薄くならないように) */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 78%, transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0%, #000 10%, #000 78%, transparent 100%);
+  }
+  body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #ytm-lyrics-stage.moviemode {
+    top: var(--ytm-mv-lyrics-top);
+    left: 20px;
+    right: 20px;
+    bottom: auto;
+    height: var(--ytm-mv-lyrics-h);
+    width: auto;
+  }
+  body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #ytm-lyrics-stage.moviemode::before {
+    display: none;
+  }
+  body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #my-lyrics-container.moviemode,
+  body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line,
+  body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line:is(.singer-odd, .singer-even),
+  body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-line :is(.lyric-main, .lyric-singer-name, .lyric-bg) {
+    text-align: left;
+    transform-origin: left;
+  }
+  body.ytm-custom-layout.ytm-movie-lyrics #my-lyrics-container.moviemode .lyric-loading {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
+/* 横長のまま幅が 900px 以下の窓。曲モード用の狭い画面の規則(歌詞の帯と
+   曲名の列を幅いっぱいにする)が動画モードにも効いて、帯が画面の外へ
+   はみ出していた。動画モードは横長の作り(右下の帯・左下の曲名)のまま。 */
+@media (max-width: 900px) and (min-aspect-ratio: 5/4) {
+  body.ytm-custom-layout.ytm-movie-lyrics:not(.ytm-no-lyrics) #ytm-lyrics-stage.moviemode {
+    width: auto;
+    left: 38%;
+    right: 24px;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode {
+    display: block;
+    left: 24px;
+    width: calc(38% - 48px);
+    max-width: none;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode #ytm-custom-info-area {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  body.ytm-custom-layout #ytm-custom-left-col.moviemode #ytm-custom-title {
+    font-size: calc(28px * var(--ytm-ui-scale));
+  }
+}
+
+/* 動画モードの映像の祖先。Immersion は YTM のプレイヤー画面を透明にして
+   隠している(visibility と opacity)。opacity は子で打ち消せないので、映像の
+   通り道だけ外す。visibility は残すので、映像以外は見えないまま。
+   YTM のプレイヤー画面は position:fixed・z-index:2 の重なりの箱なので、背景
+   (#ytm-custom-bg、1000)より上・器(1001→1002)より下に置く。 */
+body.ytm-custom-layout #player-page[data-ytmi-video-path],
+body.ytm-custom-layout #main-panel[data-ytmi-video-path],
+body.ytm-custom-layout [data-ytmi-video-path] {
+  opacity: 1 !important;
+  transform: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  perspective: none !important;
+  contain: none !important;
+  will-change: auto !important;
+  content-visibility: visible !important;
+}
+body.ytm-custom-layout.ytm-movie-mode ytmusic-player-page[data-ytmi-video-path] {
+  z-index: 1001 !important;
+}
+body.ytm-custom-layout.ytm-movie-mode #ytm-custom-wrapper {
+  z-index: 1002;
+}
+
+/* Immersion のボタン(曲/動画の切り替え等)の上では、ナビバーに譲らせる。
+   乗っている間(:hover)も出たままになる規則より強くする。検索中は譲らない
+   (lyrics-ui.js の ytmi-nav-yield) */
+body.ytm-custom-layout.ytmi-nav-yield ytmusic-nav-bar:not(:has(ytmusic-search-box[opened], ytmusic-search-box[has-query])) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition-delay: 0s !important;
+}
+
+/* ボタン列の右に取得元バッジを置く余地が無いほど狭い窓では出さない。
+   同じことは歌詞のボタンのメニューで分かる */
+@media (max-width: 480px) {
+  body.ytm-custom-layout:not(.ytm-movie-mode) #ytm-lyrics-source-debug.ytm-source-inline {
+    display: none;
+  }
+}

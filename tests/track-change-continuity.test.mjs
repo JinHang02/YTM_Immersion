@@ -127,8 +127,18 @@ test('歌詞の取得前の待ちは連打よけの短い間だけ', () => {
   assert.match(uiSource, /\}, LYRICS_LOAD_DEBOUNCE_MS\);/)
 })
 
+test('同じ曲のままジャケットだけ変わったら差し替える(動画→曲で MV のサムネイルが残らない)', () => {
+  assert.match(uiSource, /\} else \{\s*if \(meta\.src && meta\.src !== _artworkSrcShown\) \{\s*(\/\/[^\n]*\n\s*)*updateArtworkUI\(meta\);/)
+  assert.match(uiSource, /_artworkSrcShown = meta\.src;/)
+  // 曲(ATV)なのに MediaSession が MV のサムネイルの時は、バーのジャケットを使う
+  const pick = sliceBetween('const pickArtworkSrc = (sessionSrc) => {', 'const getMetadata = () => {')
+  assert.match(pick, /mode !== 'ATV_PREFERRED'/)
+  assert.match(pick, /shownId === currentId\) return sessionSrc;/)
+  assert.match(pick, /googleusercontent/)
+})
+
 test('新しいジャケットが読み終わるまで前のジャケットを外さない', () => {
-  const meta = sliceBetween('function updateMetaUI(meta) {', "ui.lyrics.innerHTML = '<div class=\"lyric-loading\"")
+  const meta = sliceBetween('function updateArtworkUI(meta) {', 'function updateArtistLink(meta) {')
   // 差し替えは placeArtwork の中だけ
   assert.equal(meta.split('ui.artwork.replaceChildren(img)').length - 1, 1)
   assert.match(meta, /img\.onload = \(\) => \{\s*if \(bgToken !== _bgLoadToken\) return;[^\n]*\n\s*placeArtwork\(\);/)

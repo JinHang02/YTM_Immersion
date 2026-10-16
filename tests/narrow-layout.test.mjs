@@ -107,11 +107,11 @@ test('見出しは 2 段に収める', () => {
   assert.match(col, /"btns btns\s+btns"/)
   // 中身(曲名・アーティスト・ボタン列・トグル)を直接この格子へ並べる
   assert.match(ruleIn(block, 'body.ytm-custom-layout #ytm-custom-info-area'), /display:\s*contents/)
-  // 取得元バッジを流れに乗せると、それだけで 1 段増える
-  assert.match(
-    ruleIn(block, 'body.ytm-custom-layout #ytm-lyrics-source-debug.ytm-source-inline'),
-    /position:\s*fixed/,
-  )
+  // 取得元バッジを流れに乗せると、それだけで 1 段増える。ボタン列と同じ段の右端に置く
+  // (以前は左下の隅に固定していて、バーを隠している時に歌詞へ重なっていた)
+  const badge = ruleIn(block, 'body.ytm-custom-layout #ytm-lyrics-source-debug.ytm-source-inline')
+  assert.match(badge, /grid-area:\s*btns/)
+  assert.match(badge, /justify-self:\s*end/)
 })
 
 test('長い曲名でトグルを押し出さない', () => {

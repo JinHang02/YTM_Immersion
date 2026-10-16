@@ -125,6 +125,124 @@ const shareOf = (text, re) => {
 };
 const ANY_ASIAN_RE = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u;
 
+// ── 時刻の突き合わせ ─────────────────────────────────────
+// 本文が合っていても、時刻がずれた歌詞がある(別の版の長さに合わせた時刻、
+// 全体が数秒ずれたもの、途中から少しずつずれていくもの)。本文の突き合わせ
+// だけでは見分けられず、そのまま表示されていた(実機)。
+// 本文の合う歌詞どうしで、同じ行の始まりの時刻を比べる。行は本文で対応を
+// 取る(取得元によって行の切り方や合いの手の有無が違うので、何行目かでは
+// 比べない)。対応の取れた行の 7 割以上が 0.8 秒以内なら、時刻も合っている。
+export const TIMING_AGREE_SEC = 0.8;
+const TIMING_AGREE_SHARE = 0.7;
+// これより少ない行しか対応が取れなければ、時刻では判断しない
+const TIMING_MIN_MATCHES = 6;
+// 対応を探す先の行数。合いの手など、片方にしか無い行を飛ばせる幅
+const TIMING_LOOKAHEAD = 6;
+
+const LEADING_TIMES_RE = /^\s*(?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]\s*)+/;
+const TIME_TAG_RE = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
+const timedLinesCache = new Map();
+const timedLinesOf = (lyrics) => {
+  const hit = timedLinesCache.get(lyrics);
+  if (hit) return hit;
+  const out = [];
+  for (const raw of String(lyrics ?? '').split(/\r?\n/)) {
+    const head = raw.match(LEADING_TIMES_RE);
+    if (!head) continue;
+    const text = lyricTextForCompare(raw.slice(head[0].length));
+    if (!text) continue;
+    for (const m of head[0].matchAll(TIME_TAG_RE)) {
+      const time = Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number(`0.${m[3]}`) : 0);
+      if (Number.isFinite(time)) out.push({ time, text });
+    }
+  }
+  out.sort((a, b) => a.time - b.time);
+  timedLinesCache.set(lyrics, out);
+  while (timedLinesCache.size > PREPARED_CACHE_MAX) timedLinesCache.delete(timedLinesCache.keys().next().value);
+  return out;
+};
+
+// 2つの歌詞の時刻がどれだけ合うか(対応の取れた行のうち、0.8 秒以内の割合)。
+// 時刻が無い・対応の取れる行が少ない時は null(判断しない)。
+export const timingAgreement = (a, b) => compareTiming(a, b)?.share ?? null;
+
+// 時刻がまったく同じ(0.02 秒以内)行の割合も返す。取得元どうしで同じ
+// ファイルを写していることがあり、写し同士は 1 票に数える
+const TIMING_SAME_SEC = 0.02;
+const TIMING_COPY_SHARE = 0.9;
+const compareTiming = (a, b) => {
+  const A = timedLinesOf(String(a ?? ''));
+  const B = timedLinesOf(String(b ?? ''));
+  if (A.length < TIMING_MIN_MATCHES || B.length < TIMING_MIN_MATCHES) return null;
+  let j = 0;
+  let matches = 0;
+  let close = 0;
+  let same = 0;
+  for (const line of A) {
+    const end = Math.min(B.length, j + TIMING_LOOKAHEAD);
+    for (let k = j; k < end; k++) {
+      if (B[k].text !== line.text) continue;
+      matches += 1;
+      const d = Math.abs(B[k].time - line.time);
+      if (d <= TIMING_AGREE_SEC) close += 1;
+      if (d <= TIMING_SAME_SEC) same += 1;
+      j = k + 1;
+      break;
+    }
+  }
+  return matches >= TIMING_MIN_MATCHES ? { share: close / matches, copy: same / matches >= TIMING_COPY_SHARE } : null;
+};
+
+// 本文の合う歌詞の中で、時刻がほかと合わないものを返す。
+//  ・YouTube Music 自身の時刻があれば、それに合うものが正しい。流れている
+//    その動画に合わせた時刻なので、ほかの取得元がそろって別の版(アルバムと
+//    シングル等)の時刻を持っていても、こちらが正しい
+//  ・無ければ、時刻の合うもの同士でまとめ、いちばん大きい塊(同数なら信頼の
+//    高い取得元を含む方)を正しいとみなす。同じファイルの写し同士は 1 票
+//  ・塊が 1 つずつしか無い(2 つが食い違うだけ)時は決めない
+//  ・時刻を比べられなかった相手(時刻なし・対応が少ない)は数えない
+const findMistimed = (members) => {
+  const timed = members.filter(e => timedLinesOf(e.lyrics).length >= TIMING_MIN_MATCHES);
+  if (timed.length < 2) return [];
+  const n = timed.length;
+  const cmp = timed.map(() => new Array(n).fill(null));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const v = compareTiming(timed[i].lyrics, timed[j].lyrics);
+      cmp[i][j] = v;
+      cmp[j][i] = v;
+    }
+  }
+  const agrees = (i, j) => !!cmp[i][j] && cmp[i][j].share >= TIMING_AGREE_SHARE;
+  const differs = (i, j) => !!cmp[i][j] && cmp[i][j].share < TIMING_AGREE_SHARE;
+  // 写しをまとめて数えた票の数
+  const votes = (g) => g.filter((i, k) => !g.slice(0, k).some(j => cmp[i][j]?.copy)).length;
+  const group = new Array(n).fill(-1);
+  const groups = [];
+  for (let i = 0; i < n; i++) {
+    if (group[i] >= 0) continue;
+    const g = [i];
+    group[i] = groups.length;
+    for (let k = 0; k < g.length; k++) {
+      for (let j = 0; j < n; j++) if (group[j] < 0 && agrees(g[k], j)) { group[j] = groups.length; g.push(j); }
+    }
+    groups.push(g);
+  }
+  const hasYtm = (g) => g.some(i => timed[i].providerId === 'ytm');
+  const bestTrust = (g) => Math.min(...g.map(i => trustOf(timed[i].providerId)));
+  const best = groups.slice().sort((a, b) => (
+    (Number(hasYtm(b)) - Number(hasYtm(a))) || (votes(b) - votes(a)) || (bestTrust(a) - bestTrust(b))
+  ))[0];
+  if (!hasYtm(best)) {
+    // 票が並んだら決めない(どちらが正しいか分からない)
+    const runnerUp = groups.filter(g => g !== best).map(votes).sort((a, b) => b - a)[0] || 0;
+    if (votes(best) < 2 || votes(best) === runnerUp) return [];
+  }
+  return timed
+    .map((e, i) => (!best.includes(i) && best.some(b => differs(i, b)) ? e : null))
+    .filter(Boolean);
+};
+
 // 取得元ごとの歌詞を突き合わせて、それぞれの見立てを返す。
 //
 // entries: [{ key?, providerId, lyrics }]。YouTube Music の歌詞のように、
@@ -134,14 +252,15 @@ const ANY_ASIAN_RE = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u;
 //
 // 返す verdict:
 //   'confirmed'    他の取得元と合っている
-//   'contradicted' 他の取得元どうしが合っていて、自分だけ外れている。
+//   'contradicted' 他の取得元どうしが合っていて、自分だけ外れている
+//                  (本文は合っていても、時刻だけがほかと合わないものも含む)。
 //                  または、合う相手が誰にも無い中で、自分だけ切れ端か
 //                  文字の種類が曲名と合わない
 //   'unknown'      比べる相手が無い、または決め手が無い
 export const judgeLyrics = (entries, { track = '' } = {}) => {
   const all = (Array.isArray(entries) ? entries : [])
     .filter(e => e && typeof e.lyrics === 'string' && e.lyrics.trim())
-    .map(e => ({ key: String(e.key || e.providerId || ''), providerId: String(e.providerId || ''), ...prepared(e.lyrics) }));
+    .map(e => ({ key: String(e.key || e.providerId || ''), providerId: String(e.providerId || ''), lyrics: e.lyrics, ...prepared(e.lyrics) }));
   const list = all.filter(e => e.text);
   const verdicts = new Map();
   // クレジット行しか無い歌詞(実測: Blinding Lights の LRC Hub)は、
@@ -185,8 +304,10 @@ export const judgeLyrics = (entries, { track = '' } = {}) => {
   const best = groups.slice().sort((a, b) => (b.length - a.length) || (bestTrust(a) - bestTrust(b)))[0];
 
   if (best.length >= 2) {
+    // 本文が合っていても、時刻がほかと合わないものは外れ
+    const mistimed = new Set(findMistimed(best.map(i => list[i])).map(e => e.key));
     list.forEach((e, i) => {
-      verdicts.set(e.key, best.includes(i) ? 'confirmed' : 'contradicted');
+      verdicts.set(e.key, best.includes(i) && !mistimed.has(e.key) ? 'confirmed' : 'contradicted');
     });
     return verdicts;
   }

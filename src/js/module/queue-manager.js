@@ -46,6 +46,9 @@ const QUEUE_OPEN_DWELL_MS = 160;
     },
 
     _extractVideoIdFromQueueItem: function (queueItem) {
+      // ページ側の橋渡し(page/queue-bridge.js)が置いた videoId が一番確か
+      const stamped = queueItem.getAttribute('data-ytmi-video-id');
+      if (stamped) return stamped;
       try {
         const a =
           queueItem.querySelector('a[href*="watch"]') ||
@@ -127,16 +130,10 @@ const QUEUE_OPEN_DWELL_MS = 160;
               fallbackUsed: !!res.fallbackUsed,
               fetchedAt: Date.now(),
             });
-          }).then(() => {
-            // Refresh highlight instantly if the panel is open.
-            // syncQueue() だと署名が同じで再構築がスキップされ、枠線が更新されない。
-            if (ui.queuePanel && ui.queuePanel.classList.contains('visible')) {
-              this._refreshHighlights();
-            }
           });
         } else {
-          // Remember "no lyrics" result so Up Next can show an orange hint.
-          // But don't overwrite already cached real lyrics.
+          // 「歌詞が無かった」を覚えておく(本再生で取りに行かずに済む)。
+          // 本物の歌詞が保存済みなら上書きしない。
           storage.get(key).then((cached0) => {
             const existing = cached0 && typeof cached0.lyrics === 'string' ? cached0.lyrics : '';
             const hasReal = existing && existing.trim() && existing !== NO_LYRICS_SENTINEL;
@@ -148,23 +145,8 @@ const QUEUE_OPEN_DWELL_MS = 160;
               noLyrics: true,
               fetchedAt: Date.now(),
             });
-          }).then(() => {
-            // Refresh highlight instantly if the panel is open.
-            // syncQueue() だと署名が同じで再構築がスキップされ、枠線が更新されない。
-            if (ui.queuePanel && ui.queuePanel.classList.contains('visible')) {
-              this._refreshHighlights();
-            }
           });
         }
-      });
-    },
-
-    // 行を作り直さずに枠線(歌詞あり/なし)だけ更新する
-    _refreshHighlights: function () {
-      if (!ui.queuePanel) return;
-      ui.queuePanel.querySelectorAll('.queue-item').forEach(row => {
-        const key = row.dataset.lyricsKey;
-        if (key) this._applyLoadedLyricsHighlight(row, key);
       });
     },
 
@@ -174,35 +156,6 @@ const QUEUE_OPEN_DWELL_MS = 160;
       return escapeHtml(value);
     },
 
-    _applyLoadedLyricsHighlight: function (row, key) {
-      if (!row || !key) return;
-      storage.get(key).then(cached => {
-        if (!row.isConnected) return;
-        const lyr = cached && typeof cached.lyrics === 'string' ? cached.lyrics : '';
-        const noLyrics = (cached && cached.noLyrics) || (lyr === NO_LYRICS_SENTINEL);
-        const hasLyrics = (typeof lyr === 'string' && lyr.trim() && lyr !== NO_LYRICS_SENTINEL);
-
-        if (hasLyrics) {
-          // Slight glowing yellow-green border (lyrics ready)
-          row.dataset.lyricsLoaded = '1';
-          row.dataset.lyricsMissing = '';
-          row.style.border = '1px solid rgba(190, 255, 110, 0.65)';
-          row.style.boxShadow = '0 0 0 1px rgba(190, 255, 110, 0.20), 0 0 14px rgba(190, 255, 110, 0.14)';
-          row.style.borderRadius = row.style.borderRadius || '12px';
-          return;
-        }
-
-        if (noLyrics) {
-          // Orange border (no lyrics found)
-          row.dataset.lyricsLoaded = '';
-          row.dataset.lyricsMissing = '1';
-          row.style.border = '1px solid rgba(255, 170, 60, 0.70)';
-          row.style.boxShadow = '0 0 0 1px rgba(255, 170, 60, 0.22), 0 0 14px rgba(255, 170, 60, 0.16)';
-          row.style.borderRadius = row.style.borderRadius || '12px';
-          return;
-        }
-      });
-    },
     init: function () {
       if (ui.queuePanel) return;
       const trigger = createEl('div', 'ytm-queue-trigger');
@@ -400,6 +353,8 @@ const QUEUE_OPEN_DWELL_MS = 160;
       if (!this.observer) this.startObserver();
 
       const container = ui.queuePanel.querySelector('.queue-list-content');
+      // 行に videoId とサムネイルを写してもらってから読む(page/queue-bridge.js)
+      document.dispatchEvent(new CustomEvent('ytmi-queue-stamp'));
       const allRawItems = document.querySelectorAll('ytmusic-player-queue-item');
 
       const visibleItems = Array.from(allRawItems).filter(item => item.offsetParent !== null);
@@ -444,7 +399,6 @@ const QUEUE_OPEN_DWELL_MS = 160;
         if (!row || seenPast.has(row.dedupeKey)) return;
         seenPast.add(row.dedupeKey);
         container.appendChild(row.el);
-        this._applyLoadedLyricsHighlight(row.el, row.el.dataset.lyricsKey);
       });
 
       const seenIds = new Set();
@@ -497,7 +451,6 @@ const QUEUE_OPEN_DWELL_MS = 160;
 
         const row = this._buildQueueRow(item, queueIndex, { playing: isPlaying });
         container.appendChild(row.el);
-        this._applyLoadedLyricsHighlight(row.el, row.el.dataset.lyricsKey);
       });
 
       // 再生中の曲を一番上に合わせる(その上が再生済み)
@@ -529,21 +482,26 @@ const QUEUE_OPEN_DWELL_MS = 160;
       // 1x1 の透明 GIF (data:) のまま。実測では最初はキュー全行がこの状態で、
       // そのままだと Up Next のジャケットがほぼ全部プレースホルダになる。
       //   1. DOM が本物を持っていればそれ(正方形のアートワーク)
-      //   2. InnerTube のキューにあるアートワーク URL
-      //   3. videoId から i.ytimg.com のサムネイル
-      let src = '';
-      if (imgEl && imgEl.src && !imgEl.src.startsWith('data:')) {
-        src = imgEl.src;
-      } else if (queueEntry && queueEntry.thumbnail) {
-        src = queueEntry.thumbnail;
-      } else if (videoId) {
-        src = `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
+      //   2. ページ側の橋渡しが写した、その行のサムネイル URL
+      //   3. InnerTube のキューにあるアートワーク URL
+      //   4. videoId から i.ytimg.com のサムネイル
+      // 読めなかった時は次の候補へ進む。以前は最初の 1 つが落ちるとそのまま
+      // 記号になり、後ろに使える URL があっても試していなかった。
+      const candidates = [];
+      if (imgEl && imgEl.src && !imgEl.src.startsWith('data:')) candidates.push(imgEl.src);
+      const stampedThumb = item.getAttribute('data-ytmi-thumb');
+      if (stampedThumb) candidates.push(stampedThumb);
+      if (queueEntry && queueEntry.thumbnail && (!videoId || !queueEntry.videoId || queueEntry.videoId === videoId)) {
+        candidates.push(queueEntry.thumbnail);
       }
+      if (videoId) candidates.push(`https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`);
+      const sources = [...new Set(candidates.filter(u => /^https:\/\//.test(u)))];
+      const src = sources[0] || '';
 
       const row = createEl('div', '', `queue-item ${isPlaying ? 'current' : ''} ${past ? 'past' : ''}`);
 
       const imgHtml = src
-        ? `<img src="${src}" loading="lazy">`
+        ? `<img src="${this._escapeHtml(src)}" loading="lazy">`
         : `<div class="queue-img-fallback">♪</div>`;
 
       const indicatorHtml = isPlaying
@@ -565,10 +523,17 @@ const QUEUE_OPEN_DWELL_MS = 160;
       // インラインの onerror は YTM の CSP で実行されないので、必ずここで張る。
       const rowImg = row.querySelector('.queue-img img');
       if (rowImg) {
-        rowImg.addEventListener('error', () => {
+        let next = 1;
+        const onError = () => {
+          if (next < sources.length) {
+            rowImg.src = sources[next++];
+            return;
+          }
+          rowImg.removeEventListener('error', onError);
           const fallback = createEl('div', '', 'queue-img-fallback', '♪');
           rowImg.replaceWith(fallback);
-        }, { once: true });
+        };
+        rowImg.addEventListener('error', onError);
       }
 
       row.onclick = (e) => {
@@ -582,7 +547,6 @@ const QUEUE_OPEN_DWELL_MS = 160;
         setTimeout(() => this.syncQueue(), 500);
       };
 
-      row.dataset.lyricsKey = uniqueKey;
       return { el: row, dedupeKey: videoId || uniqueKey };
     }
   };

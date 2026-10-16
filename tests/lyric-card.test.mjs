@@ -7,7 +7,8 @@
 //   - Esc でやめると、歌っている行への追従が戻る
 //   - 曲が変わる・広告が始まると選ぶ状態を閉じる
 //   - 歌詞が無い曲では「選べる歌詞がありません」と出す
-//   - カードは 1080×1080 で作られ、コピー・保存・Esc で閉じる
+//   - カードは 1600×900(16:9、X や Discord で切れない)で作られ、コピー・X に投稿・
+//     リンクのコピー・保存・Esc で閉じる
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -68,6 +69,27 @@ test('1 語が幅を超える時は字で切る', () => {
   assert.equal(lines.join(''), 'Supercalifragilistic')
 })
 
+test('日本語は本体の歌詞と同じ文節の切れ目で切り、行の長さを揃える', () => {
+  // 文節の切れ目は lyrics-ui.js の budouxPhraseBoundaries(ここでは決め打ちの偽物)
+  const context = vm.createContext({
+    ui: {}, t: (k) => k, Intl, console,
+    budouxPhraseBoundaries: (text) => text === '逃げようとしたって結果は同じだ' ? [9, 12] : null,
+  })
+  vm.runInContext(`${cardSource}\nthis.LyricCard = LyricCard;`, context)
+  const lines = context.LyricCard._wrap(fakeCtx, '逃げようとしたって結果は同じだ', 120)
+  // 前から詰めると「逃げようとしたって結果 / は同じだ」になりうるが、文節の中では切らない。
+  // いちばん長い文節(9 字)より狭めないので「したっ / て」にもならない
+  assert.deepEqual([...lines], ['逃げようとしたって', '結果は同じだ'])
+})
+
+test('同じ行数のまま、いちばん狭い幅で組み直す(2 行目に数文字だけ残さない)', () => {
+  const { _wrap: wrap } = load()
+  const lines = wrap(fakeCtx, 'aa bb cc dd ee ff gg', 170)
+  assert.equal(lines.length, 2)
+  const lens = lines.map(l => [...l].length)
+  assert.ok(Math.abs(lens[0] - lens[1]) <= 3, `長さが揃っていない: ${lines.join(' / ')}`)
+})
+
 test('content script として lyrics-ui.js より前に読み込む', () => {
   const js = manifest.content_scripts[0].js
   const card = js.indexOf('src/js/module/lyric-card.js')
@@ -103,4 +125,16 @@ test('文言は 4 言語ぶんある', () => {
 
 test('画像はどこにも送らない', () => {
   assert.doesNotMatch(cardSource, /\bfetch\(|sendMessage|XMLHttpRequest/)
+})
+
+test('X や Discord で切れない 16:9 で作る', () => {
+  assert.match(cardSource, /const W = 1600;/)
+  assert.match(cardSource, /const H = 900;/)
+})
+
+test('X に投稿は、画像をコピーしてから文とリンクの入った投稿画面を開く(画像は送らない)', () => {
+  const fn = cardSource.slice(cardSource.indexOf("xBtn.onclick = async () => {"), cardSource.indexOf('};', cardSource.indexOf("xBtn.onclick = async () => {")))
+  assert.ok(fn.indexOf('copyImage(blob)') < fn.indexOf('window.open('), 'コピーより先に開いている')
+  assert.match(fn, /https:\/\/x\.com\/intent\/tweet\?/)
+  assert.match(cardSource, /music\.youtube\.com\/watch\?v=/)
 })

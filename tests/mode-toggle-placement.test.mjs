@@ -16,8 +16,9 @@ const css = read('src/css/style.css')
 // 置き場所を選ぶ部分だけを、偽の document の上で動かす
 const pickSrc = ui.slice(ui.indexOf('const MODE_TOGGLE_HOSTS = ['), ui.indexOf('const placeModeToggle ='))
 const el = (name, shown = true, visibility = 'visible') => ({ name, visibility, isConnected: true, getClientRects: () => (shown ? [{}] : []) })
-const pickWith = (nodes) => {
-  const document = { querySelector: (s) => nodes[s] || null, body: el('body') }
+const pickWith = (nodes, bodyClasses = []) => {
+  const body = { ...el('body'), classList: { contains: (c) => bodyClasses.includes(c) } }
+  const document = { querySelector: (s) => nodes[s] || null, body }
   // バーは PlayerBar(player-bar.js)が探す。ここでは知っている作りの旧バーだけ
   const PlayerBar = { get: () => nodes['ytmusic-player-bar'] || null, query: (s) => document.querySelector(s) }
   const getComputedStyle = (e) => ({ visibility: e.visibility || 'visible' })
@@ -139,4 +140,26 @@ test('置き場所が押下を下へ通す作り(新バーの右の列)でも、
   const plain = node('plain'); bar.kids.push(plain)
   plain.getBoundingClientRect = right.getBoundingClientRect
   assert.equal(check([bar, html], plain), false)
+})
+
+test('操作バーを自動で隠している間(visibility: hidden)は、バーの中に置いたまま浮かせない', () => {
+  // 隠れている間に置き直すと置き場所が無いことになり、ボタンだけが浮いていた(動画から戻った後など)
+  assert.deepEqual(pickWith({
+    '.right-controls-buttons': el('rcb', true, 'hidden'),
+    'ytmusic-player-bar': el('bar', true, 'hidden'),
+  }, ['ytm-bar-autohide']), { name: 'rcb', how: 'prepend' })
+})
+
+test('動画モードの曲名の欄に pointer-events: none を付けない(曲/動画の切り替えとボタン列が押せなくなる)', () => {
+  const rule = css.slice(css.indexOf('#ytm-custom-left-col.moviemode {'))
+  assert.doesNotMatch(rule.slice(0, rule.indexOf('}')), /pointer-events:\s*none/)
+})
+
+test('MV の無い曲では「動画」を押しても受け付けない', () => {
+  assert.match(ui, /toggle\.hasAttribute\('toggle-disabled'\) && !toggle\.hasAttribute\('selected-item-has-video'\)/)
+  assert.match(css, /ytmusic-av-toggle\[toggle-disabled\]:not\(\[selected-item-has-video\]\) \.video-button/)
+})
+
+test('動画モードの歌詞は、歌手の左右の振り分けがあっても全部右揃え', () => {
+  assert.match(css, /#my-lyrics-container\.moviemode \.lyric-line:is\(\.singer-odd, \.singer-even\),[\s\S]{0,200}\{\s*text-align: right;/)
 })

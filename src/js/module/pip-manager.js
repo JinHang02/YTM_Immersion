@@ -3,11 +3,12 @@
       if (document.pictureInPictureElement) return;
 
 
+      // 動画モードで開いたら MV の形(16:9)の窓にする
+      const videoMode = moviemode === true;
       try {
-        this.pipWindow = await documentPictureInPicture.requestWindow({
-          width: 380,
-          height: 600,
-        });
+        this.pipWindow = await documentPictureInPicture.requestWindow(videoMode
+          ? { width: 640, height: 360 }
+          : { width: 380, height: 600 });
       } catch (e) {
         console.error('PiP failed:', e);
         return;
@@ -426,6 +427,103 @@ const forceStyle = pipDoc.createElement('style');
         .top-right-btn { width: 36px; height: 36px; flex-shrink: 0; background: rgba(255, 255, 255, 0.1); }
         .top-right-btn svg { width: 18px; height: 18px; }
         .top-right-btn.liked { color: #ffffff; }
+
+        /* ── 動画モードの PiP ──────────────────────────────
+           窓の形で 2 通りに並べる。
+           ・横長(動画モードで開いた 16:9 の窓): 映像を全面に映し、歌詞は
+             右下に右揃えで重ねる。見せるのは今の行と次の行だけ。
+             曲名はいつも左上に出し、操作ボタンはマウスが乗っている間だけ出す。
+           ・縦長(曲モードで開いた窓のまま動画にした時など): 映像を上に幅いっぱいで
+             置き、その下は曲の PiP と同じ(曲名・歌詞の一覧・操作ボタン)。
+             縦長の窓に映像を全面で収めると、上下が黒い帯だらけになる。 */
+        #pip-video { display: none; }
+        body.ytm-pip-video #pip-video {
+          display: block; position: absolute; left: 0; pointer-events: none; background: #000;
+        }
+
+        @media (min-aspect-ratio: 5/4) {
+          body.ytm-pip-video #pip-video {
+            top: 0; width: 100%; height: 100%; object-fit: contain; z-index: -3;
+          }
+          body.ytm-pip-video #pip-bg-layer,
+          body.ytm-pip-video #pip-noise-layer,
+          body.ytm-pip-video .artwork-box { display: none; }
+          /* 白い歌詞が明るい映像に沈まないよう、下側だけ暗くする */
+          body.ytm-pip-video #pip-container::after {
+            content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+            background: linear-gradient(to top, rgba(0,0,0,0.52) 0%, rgba(0,0,0,0.34) 24%, rgba(0,0,0,0.14) 52%, transparent 100%);
+          }
+          body.ytm-pip-video .pip-header,
+          body.ytm-pip-video.ytm-no-lyrics .pip-header {
+            inset: 0 0 auto 0;
+            flex-direction: row; justify-content: flex-start; align-items: center;
+            gap: 12px; padding: 12px 14px 32px; text-align: left;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.65), transparent);
+          }
+          body.ytm-pip-video.ytm-no-lyrics .info-box { flex-grow: 1; align-items: flex-start; text-align: left; }
+          body.ytm-pip-video.ytm-no-lyrics #pip-title { font-size: 16px; -webkit-line-clamp: 1; margin-bottom: 1px; }
+          body.ytm-pip-video.ytm-no-lyrics #pip-artist { font-size: 14px; }
+          body.ytm-pip-video.ytm-no-lyrics #pip-like-btn { position: static; }
+          body.ytm-pip-video .controls-box {
+            inset: 0; width: auto; padding: 0; gap: 28px;
+            background: rgba(0,0,0,0.3);
+          }
+          body.ytm-pip-video #pip-title,
+          body.ytm-pip-video #pip-artist { text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
+          body.ytm-pip-video #pip-artist { color: rgba(255,255,255,0.75); }
+          body.ytm-pip-video .controls-box { opacity: 0; transition: opacity 0.25s ease; }
+          body.ytm-pip-video:hover .controls-box { opacity: 1; }
+          body.ytm-pip-video:not(:hover) .control-btn { pointer-events: none; }
+          /* ★だけはボタンなので、操作ボタンと同じく乗った時だけ */
+          body.ytm-pip-video #pip-like-btn { opacity: 0; transition: opacity 0.25s ease; }
+          body.ytm-pip-video:hover #pip-like-btn { opacity: 1; }
+
+          /* 歌詞は本体の動画モード(style.css の #ytm-lyrics-stage.moviemode)と
+             同じ作り: 右寄りの帯に右揃え、前後の行は薄く、字の後ろに柔らかい影。
+             大きさは窓に合わせて縮める。 */
+          body.ytm-pip-video:not(.ytm-animated-caption-mode) #pip-lyrics-container {
+            top: auto; left: 36%; right: 5%; bottom: 5%; height: 52%;
+            padding: 20vh 0 20vh 0;
+            text-align: right;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
+          }
+          body.ytm-pip-video .lyric-line,
+          body.ytm-pip-video .lyric-line.singer-odd,
+          body.ytm-pip-video .lyric-line.singer-even {
+            font-size: clamp(15px, 3.6vw, 34px) !important;
+            font-weight: 700 !important;
+            margin-bottom: 0.45em !important;
+            padding: 0 !important;
+            text-align: right !important;
+            transform-origin: right center !important;
+          }
+          body.ytm-pip-video .lyric-line,
+          body.ytm-pip-video .lyric-line.active {
+            text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45) !important;
+          }
+          body.ytm-pip-video .lyric-line .lyric-main,
+          body.ytm-pip-video .lyric-line .lyric-singer-name { text-align: right !important; }
+          body.ytm-pip-video:not(.ytm-no-timestamp) .lyric-line:not(.active) .lyric-main { opacity: 0.4; }
+        }
+
+        @media not all and (min-aspect-ratio: 5/4) {
+          body.ytm-pip-video #pip-video {
+            top: 0; width: 100%; height: 56.25vw; object-fit: cover; z-index: 6;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+          }
+          body.ytm-pip-video .artwork-box { display: none; }
+          body.ytm-pip-video .pip-header { top: 56.25vw; padding: 14px 24px 10px; }
+          body.ytm-pip-video:not(.ytm-animated-caption-mode) #pip-lyrics-container {
+            top: calc(56.25vw + 64px);
+            padding-top: 24px;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 40px, black 70%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40px, black 70%, transparent 100%);
+          }
+          body.ytm-pip-video.ytm-no-lyrics .pip-header {
+            inset: 56.25vw 0 0 0; padding: 24px 28px 150px;
+          }
+        }
       `;
       
             
@@ -439,6 +537,7 @@ const forceStyle = pipDoc.createElement('style');
       if (document.body.classList.contains('ytm-keep-past-lyrics')) pipDoc.body.classList.add('ytm-keep-past-lyrics');
       if (document.body.classList.contains('ytm-fade-past-lyrics')) pipDoc.body.classList.add('ytm-fade-past-lyrics');
       if (document.body.classList.contains('ytm-singer-colors-enabled')) pipDoc.body.classList.add('ytm-singer-colors-enabled');
+      if (videoMode) pipDoc.body.classList.add('ytm-pip-video');
 
       // 曲名・アーティスト名・画像 URL は YTM から来る文字列。そのまま
       // innerHTML に入れると "<" ひとつで PIP の中身が崩れる。
@@ -448,6 +547,7 @@ const forceStyle = pipDoc.createElement('style');
       
 pipDoc.body.innerHTML = `
         <div id="pip-container">
+            <video id="pip-video" muted playsinline></video>
             <div id="pip-bg-layer" style="background-image: url('${artworkUrl}')"></div>
             <div id="pip-noise-layer"></div>
             
@@ -565,7 +665,8 @@ pipDoc.body.innerHTML = `
       });
 
       PipManager.updateLikeState(pipDoc);
-      
+      this.syncVideoMode();
+
       const videoEl = document.querySelector('video');
       PipManager.updatePlayState(videoEl ? videoEl.paused : true);
 
@@ -580,11 +681,23 @@ pipDoc.body.innerHTML = `
         }
       });
 
+      // 窓の大きさを変えたら、今の行の位置を測り直す。次の行に移るまで
+      // 前の大きさで測った位置のままで、今の行が枠の外に出ていた
+      // (本体の窓と同じ recenterLyricsAfterResize。止める位置・動いている行も捨てる)
+      this.pipWindow.addEventListener('resize', () => {
+        if (this.pipLyricsContainer) recenterLyricsAfterResize();
+      });
+
       // 開閉時はウィンドウが切り替わるので、ループを張り直す必要がある。
       // startLyricRafLoop() は実行中ガードで弾かれてしまう。
       (window.restartLyricRafLoop || startLyricRafLoop)();
 
       this.pipWindow.addEventListener('pagehide', () => {
+        // 閉じた窓の歌詞の行を抱えたままにしない(文書ごと残る。lyrics-ui.js の
+        // forgetDetachedLyricMotionRows)。閉じた時点ではまだ繋がっているので、
+        // 窓が片付いた後に外す
+        setTimeout(() => { if (typeof forgetDetachedLyricMotionRows === 'function') forgetDetachedLyricMotionRows(); }, 0);
+        this.detachVideo();
         this.pipWindow = null;
         this.pipLyricsContainer = null;
         this._lastPlayStateIsPaused = null;
@@ -594,6 +707,65 @@ pipDoc.body.innerHTML = `
 
     pipWindow: null,
     pipLyricsContainer: null,
+
+    // ── 動画モードの PiP に MV を映す ─────────────────────────
+    // YTM の video 要素は動かさない(動かすとプレイヤーが壊れる)。
+    // captureStream で映像だけを写し取り、PiP の video に流す。
+    // 音は本体から出ているので、写しの音は止めて持たない。
+    // 写しは PiP が動画モードで開いている間だけ持つ(閉じたら止める)。
+    _videoStream: null,
+    _videoSource: null,
+    _onVideoSourceLoaded: null,
+
+    // 曲/動画が切り替わった時・PiP を開いた時・曲が変わった時に呼ぶ
+    syncVideoMode: function () {
+      const pipDoc = this.pipWindow?.document;
+      if (!pipDoc?.body) return;
+      const on = moviemode === true;
+      pipDoc.body.classList.toggle('ytm-pip-video', on);
+      if (!on) {
+        this.detachVideo();
+        return;
+      }
+      const source = document.querySelector('#movie_player video') || document.querySelector('video');
+      const live = this._videoStream?.getVideoTracks().some(t => t.readyState === 'live');
+      if (source && (source !== this._videoSource || !live)) this.attachVideo(source);
+    },
+
+    attachVideo: function (source) {
+      const el = this.pipWindow?.document?.getElementById('pip-video');
+      if (!el || typeof source.captureStream !== 'function') return;
+      this.detachVideo();
+      let stream;
+      try {
+        stream = source.captureStream();
+      } catch (e) {
+        // 写し取れない動画(保護付きなど)。歌詞の画面のまま、背景は黒
+        console.warn('[YTM] PiP に動画を写せない', e);
+        return;
+      }
+      stream.getAudioTracks().forEach(t => { stream.removeTrack(t); t.stop(); });
+      el.srcObject = stream;
+      el.play().catch(() => {});
+      this._videoStream = stream;
+      this._videoSource = source;
+      // YTM は曲が変わると同じ video 要素に別の映像を読み込む。その時、
+      // 写しの映像は終わって新しく足される。読み込み終わったら写し直す
+      this._onVideoSourceLoaded = () => this.syncVideoMode();
+      source.addEventListener('loadeddata', this._onVideoSourceLoaded);
+    },
+
+    detachVideo: function () {
+      if (this._videoSource && this._onVideoSourceLoaded) {
+        this._videoSource.removeEventListener('loadeddata', this._onVideoSourceLoaded);
+      }
+      this._videoStream?.getTracks().forEach(t => t.stop());
+      const el = this.pipWindow?.document?.getElementById('pip-video');
+      if (el) el.srcObject = null;
+      this._videoStream = null;
+      this._videoSource = null;
+      this._onVideoSourceLoaded = null;
+    },
 
     toggle: async function () {
       if (this.pipWindow) {
@@ -611,7 +783,9 @@ pipDoc.body.innerHTML = `
       const root = this.pipWindow?.document?.documentElement;
       if (!root) return;
       const css = getComputedStyle(document.documentElement);
-      const brightness = parseFloat(css.getPropertyValue('--ytm-bg-brightness')) || DEFAULT_BG_BRIGHTNESS;
+      // 0 (真っ黒)もそのまま渡す。`|| 既定値` だと 0 が既定値に化けていた
+      const raw = parseFloat(css.getPropertyValue('--ytm-bg-brightness'));
+      const brightness = Number.isFinite(raw) ? raw : DEFAULT_BG_BRIGHTNESS;
       const dim = parseFloat(css.getPropertyValue('--ytm-bg-art-dim')) || 1;
       root.style.setProperty('--pip-bg-brightness', (brightness * dim).toFixed(3));
     },

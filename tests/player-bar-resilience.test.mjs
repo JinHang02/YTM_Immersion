@@ -421,8 +421,9 @@ test('バーを監視できなくても、曲の切り替わりで tick が回�
 })
 
 test('動画モードで YTM がバーを隠している間は、押せるかを測らない', () => {
-  assert.match(ui, /const barMayBeAutoHidden = \(\) => !!moviemode;/)
-  assert.match(ui, /PlayerBar\.check\(\{ shown, skip: !!moviemode \}\)/)
+  assert.match(ui, /const barMayBeAutoHidden = \(\) => !!moviemode \|\|/)
+  assert.match(ui, /const barHiddenOnPurpose = \(\) => !!moviemode/)
+  assert.match(ui, /PlayerBar\.check\(\{ shown, skip: barHiddenOnPurpose\(\) \}\)/)
 })
 
 test('PiP の前へ・次へは、ボタンが見つからなければキー操作で送る', () => {

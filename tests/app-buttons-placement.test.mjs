@@ -28,11 +28,11 @@ const configOf = (name) => {
 }
 
 test('曲の操作が前、統計と設定が後ろの組', () => {
-  assert.match(ui, /btns\.push\(lyricsBtnConfig, pipBtnConfig, lyricCardBtnConfig, switchBtnConfig, replayBtnConfig, settingsBtnConfig\);/)
+  assert.match(ui, /btns\.push\(lyricsBtnConfig, pipBtnConfig, qualityBtnConfig, lyricCardBtnConfig, switchBtnConfig, replayBtnConfig, settingsBtnConfig\);/)
   for (const name of ['replayBtnConfig', 'settingsBtnConfig']) {
     assert.match(configOf(name), /group: 'app'/, name)
   }
-  for (const name of ['lyricsBtnConfig', 'pipBtnConfig', 'lyricCardBtnConfig', 'switchBtnConfig']) {
+  for (const name of ['lyricsBtnConfig', 'pipBtnConfig', 'qualityBtnConfig', 'lyricCardBtnConfig', 'switchBtnConfig']) {
     assert.doesNotMatch(configOf(name), /group:/, name)
   }
   assert.match(ui, /\(b\.group === 'app' \? ui\.appBtnArea : ui\.btnArea\)\.appendChild\(btn\)/)

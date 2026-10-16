@@ -501,7 +501,15 @@
     const targets = [];
     const title = ui.title;
     const artist = ui.artist;
-    const playerBar = document.querySelector("ytmusic-player-bar, ytmusic-miniplayer");
+    // 使っているバー。窓を縦長・狭くすると、YTM はプレイヤーページの中に
+    // もう 1 つ ytmusic-player-bar(#top-player-bar)を作り、ページの頭から
+    // 探すとそちらが先に見つかる。それの印を外しても本物のバーは隠れたままで、
+    // 縦長から横長へ戻した動画モードでバーが二度と出なくなっていた(実機)
+    const playerBar = (typeof PlayerBar !== 'undefined' && PlayerBar.get())
+      || document.querySelector("ytmusic-player-bar, ytmusic-miniplayer");
+    // 使うバーが入れ替わった時に、前のバーに付けた印が残らないようにする
+    document.querySelectorAll('ytmusic-player-bar.inactive, ytmusic-miniplayer.inactive')
+      .forEach(el => { if (el !== playerBar) el.classList.remove('inactive'); });
     const switcher = document.querySelector("ytmusic-av-toggle");
     if (title) targets.push(title);
     if (artist) targets.push(artist);

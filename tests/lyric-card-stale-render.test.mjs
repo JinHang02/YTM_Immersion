@@ -61,7 +61,7 @@ const fakeContext = () => new Proxy({}, {
   get: (target, prop) => {
     if (prop in target) return target[prop]
     if (prop === 'measureText') return (s) => ({ width: String(s).length * 10 })
-    if (prop === 'createRadialGradient') return () => ({ addColorStop() {} })
+    if (prop === 'createRadialGradient' || prop === 'createLinearGradient') return () => ({ addColorStop() {} })
     if (prop === 'getImageData') return () => ({ data: new Uint8ClampedArray(16 * 16 * 4) })
     return () => {}
   },

@@ -883,6 +883,12 @@ const collapseCrossSideDuplicateLyrics = (lines) => {
 // 誤マッチが起きず、タイミングも配信元のデータそのままで正確なため。
 // 背景の明るさの既定値。CSS 側の var() のフォールバックとも揃えること。
 const DEFAULT_BG_BRIGHTNESS = 0.65;
+// 保存値・CSS 変数・スライダーの値(文字列)を 0〜1 の数にする。0 は「真っ黒」で
+// 正しい値。以前は `値 || 既定値` と書いていた所があり、0 が既定値(65%)に化けた。
+const normalizeBgBrightness = (value) => {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : DEFAULT_BG_BRIGHTNESS;
+};
 
 // 歌詞ソースは「YTM 優先 / LRCHub 優先」の2択。どちらも他方(と残りの
 // 取得元)へ自動で落ちるので、選んだせいで歌詞が出なくなることはない。
@@ -1353,9 +1359,63 @@ function updateAnimatedCaptionStage(currentTime, force = false) {
   });
 }
 
+// 器の大きさが変わったら、YTM のプレイヤーに映像の大きさを合わせ直させる
+// (窓の resize を送ると測り直す)。要るのは映像を器へ移している動画モードだけ。
+// 以前は曲モードでも、器の余白が動く間(バーを自動で隠す・出す時の
+// 0.5 秒の変化)に毎フレーム送っていて、1 回の出し入れで 60 回、歌詞の
+// 寄せ直しやジャケットの背景の描き直しまで毎フレーム走らせていた(実測)。
+// 変わり始めと落ち着いた所の 2 回だけ送る。
+const MOVIE_RESIZE_SETTLE_MS = 120;
+// 動画モードの映像は、YTM の置いた場所のまま CSS で見せる(器へは移さない)。
+//
+// 以前は ytmusic-player を Immersion の器へ移していた。YTM は横長用と狭い窓用で
+// 別の ytmusic-player を持ち、窓の幅が切り替わりの幅をまたぐと入れ替えて映像
+// (#movie_player)だけを移す。器に移した方はこの入れ替えから外れ、古い
+// ytmusic-player が溜まって曲モードの並びを崩し、最後は映像そのものが消えた
+// (実機: 縦長と横長を行き来して曲へ戻すと、曲名が下へ寄って歌詞が出ず、
+// 横長に戻すと video 要素が無くなった)。
+// プレイヤーバーと同じやり方にする: 映像の入った ytmusic-player に印を付け、
+// その祖先(Immersion が隠している YTM の画面)の「透明・変形」だけを外す。
+// 隠すのは visibility なので、中身は映像以外見えないまま。印は YTM が
+// 入れ替えるたびに付け直す(大きさが落ち着いた後と、曲の監視のついで)。
+const MOVIE_PLAYER_ATTR = 'data-ytmi-movie-player';
+const MOVIE_PATH_ATTR = 'data-ytmi-video-path';
+const MOVIE_PLAYER_RECHECK_MS = 600;
+const markMoviePlayerPath = () => {
+  const on = moviemode === true && document.body.classList.contains('ytm-custom-layout');
+  const live = on ? liveYtmPlayer() : null;
+  // 前の版で器へ移した ytmusic-player が残っていたら、元の場所へ返す
+  returnStaleYtmPlayers(null);
+  const path = new Set();
+  if (live) for (let p = live.parentElement; p && p !== document.body; p = p.parentElement) path.add(p);
+  let changed = false;
+  for (const el of document.querySelectorAll(`[${MOVIE_PATH_ATTR}]`)) {
+    if (!path.has(el)) { el.removeAttribute(MOVIE_PATH_ATTR); changed = true; }
+  }
+  for (const el of path) {
+    if (!el.hasAttribute(MOVIE_PATH_ATTR)) { el.setAttribute(MOVIE_PATH_ATTR, ''); changed = true; }
+  }
+  for (const el of document.querySelectorAll(`[${MOVIE_PLAYER_ATTR}]`)) {
+    if (el !== live) { el.removeAttribute(MOVIE_PLAYER_ATTR); changed = true; }
+  }
+  if (live && !live.hasAttribute(MOVIE_PLAYER_ATTR)) { live.setAttribute(MOVIE_PLAYER_ATTR, ''); changed = true; }
+  // 映像の大きさを新しい枠に合わせ直させる
+  if (changed) window.dispatchEvent(new Event('resize'));
+  return changed;
+};
 function setupMovieMode() {
+  let settleTimer = null;
+  let recheckTimer = null;
   const resizeObserver = new ResizeObserver(() => {
-    window.dispatchEvent(new Event('resize'));
+    if (moviemode !== true) return;
+    if (!settleTimer) window.dispatchEvent(new Event('resize'));
+    clearTimeout(settleTimer);
+    clearTimeout(recheckTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (!markMoviePlayerPath()) window.dispatchEvent(new Event('resize'));
+      recheckTimer = setTimeout(markMoviePlayerPath, MOVIE_PLAYER_RECHECK_MS);
+    }, MOVIE_RESIZE_SETTLE_MS);
   });
   const targetWrapper = document.getElementById("ytm-custom-wrapper");
   if (targetWrapper) {
@@ -1379,72 +1439,69 @@ function setupMovieMode() {
   };
   check();
 };
-// ============================================================
-// ■ 未解決の不具合: Immersion ON のとき「曲 / 動画」の切り替えが効かない
-//   (2026-08-15 調査。次に触る人向けのメモ)
-//
-// 症状
-//   Immersion ON では「動画」を押しても playback-mode が ATV_PREFERRED の
-//   まま変わらない。OFF にすると、まったく同じ click() で即座に
-//   OMV_PREFERRED になり URL も MV の videoId へ変わる。
-//   つまり YTM 側は正常で、こちらが何かを邪魔している。
-//
-// これは以前からある不具合
-//   bringSwitcherOnly() は 2026-03-23 から一度も変わっていない
-//   (git log -S"bringSwitcherOnly" で確認済み)。
-//   コードが変わっていないのに動かなくなったので、原因は YTM 側の
-//   実装変更。同時期に、キューの ytmusic-player-queue-item から
-//   a 要素が消えて videoId が取れなくなる変更も入っている
-//   (queue-manager.js の _buildQueueIndex 参照)。同じ刷新の一部と思われる。
-//
-// 唯一つかんだ手がかり
-//   #ytm-custom-info-area ごと DOM から切り離した状態でクリックすると
-//   切り替えが成立した。この時 handleMutation → changeUIWithMovieMode 内の
-//   customSwitcherParent.appendChild(switcher) が例外で止まっている。
-//   ただし video 要素の移動はその前に走っているので、
-//   「動画要素の移動」ではなく「切り替え中の switcher の移動」が
-//   引き金である可能性が高い。
-//
-// 試して駄目だった案 (どれも切り替わらず)
-//   1. switcher を動かさず、自前の代理ボタンから本体を click() する
-//   2. 本体の visibility:hidden を打ち消してから click() する
-//   3. プレイヤーページの非表示と ytm-custom-layout を外してから click() する
-//   4. handleMutation の DOM 組み替えを 600ms 遅らせる
-//   1 が駄目だった点が上の仮説と噛み合っておらず、まだ何か見落としがある。
-//
-// 次に調べるとよさそうなこと
-//   - YTM 側のクリックハンドラが実際に走っているか (イベントリスナの確認)
-//   - ytmusic-player-page の内部状態 (player-page-open / player-ui-state) が
-//     切り替え処理の前提になっていないか
-//   - Immersion OFF の復帰処理 changeIModeUIWithMovieMode(false) が
-//     具体的に何を戻しているか。そこに必要条件が含まれているはず
-//
-// UI は今のところ従来どおり (トグルは表示したまま) にしてある。
-// 壊れているのを確認できたのが 2 環境だけで、YTM の段階的な配信で
-// まだ動く利用者が居る可能性を否定できないため。
-// 広く壊れていると分かったら、Immersion 中は非表示にするのが親切。
-// ============================================================
+// 「曲 / 動画」の切り替え(ytmusic-av-toggle)は Immersion の見出しへ移して使う。
+// 以前ここに「Immersion ON だと切り替えが効かない」という未解決のメモがあった。
+// 実際の原因は、切り替え直後に曲のキーが変わったのを曲替わりと見なして
+// 「曲」へ押し戻していたこと(preferLyricsDefault と _userPlaybackModeUntil)。
+// 映像は器へ移さず、YTM の置いた場所のまま見せる(markMoviePlayerPath)。
+// 映像(ytmusic-player)と曲/動画の切り替えを Immersion の器へ移す前の居場所。
+// 以前は戻す先を「#main-panel の 2 番目の子の前」「1 番目の子の中」と番号で
+// 決めていたが、YTM の作りが変わって番号の先は別物になっていた(1 番目は
+// 右上のメニューのボタン)。しかも映像の居場所は窓の幅で変わる(狭いと
+// #music-player-wrapper の中)。縦長の窓にした後で曲へ戻すと、映像が YTM の
+// 想定しない所に置かれて崩れていた(実機)。移す直前の場所を覚えて、そこへ戻す。
+const _ytmHomes = new WeakMap();
+const rememberYtmHome = (el) => {
+  const parent = el && el.parentElement;
+  if (!parent || parent.closest('#ytm-custom-wrapper')) return;
+  _ytmHomes.set(el, { parent, next: el.nextSibling });
+};
+const returnYtmHome = (el, fallbackParent, fallbackBefore) => {
+  if (!el) return;
+  const home = _ytmHomes.get(el);
+  if (home && home.parent.isConnected) {
+    if (el.parentElement === home.parent) return;
+    home.parent.insertBefore(el, home.next && home.next.parentNode === home.parent ? home.next : null);
+    return;
+  }
+  if (fallbackParent && !fallbackParent.contains(el)) fallbackParent.insertBefore(el, fallbackBefore || null);
+};
+// 映像の入った ytmusic-player。YTM は窓の幅が切り替わりの幅をまたぐたびに
+// ytmusic-player を作り直し、映像(#movie_player)を新しい方へ移す(実機: 縦長と
+// 横長を行き来すると 3 つになった)。「ページの最初の ytmusic-player」を掴むと
+// 古い空の方を掴むので、映像の入っている方を探す。
+const liveYtmPlayer = () => document.getElementById('movie_player')?.closest('ytmusic-player')
+  || document.querySelector('ytmusic-player#player');
+// Immersion の器に残った古い ytmusic-player を元の場所へ返す。残すと曲モードの
+// 並び(格子)の段を取り、曲名が下へ押し出されて歌詞の高さが 0 になっていた(実機)
+const returnStaleYtmPlayers = (live) => {
+  const wrapper = document.getElementById('ytm-custom-wrapper');
+  if (!wrapper) return;
+  const fallback = document.querySelector('ytmusic-player-page #main-panel');
+  for (const el of wrapper.querySelectorAll(':scope > ytmusic-player')) {
+    if (el === live) continue;
+    el.classList.remove('moviemode');
+    returnYtmHome(el, fallback);
+  }
+};
 function bringSwitcherOnly() {
   const switcher = document.querySelector("ytmusic-av-toggle");
   const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
+  rememberYtmHome(switcher);
   customSwitcherParent.appendChild(switcher);
 }
 function changeIModeUIWithMovieMode(mode) {
   if (!mode) {
     moviemode = null;
+    document.body.classList.remove('ytm-movie-mode');
+    if (typeof VideoQuality !== 'undefined') VideoQuality.sync(false);
+    ui.qualityMenu?.classList.remove('visible');
     if (movieObserver) movieObserver.stop();
     movieObserver = null;
     const switcher = document.querySelector("ytmusic-av-toggle");
-    const video = document.querySelector("ytmusic-player#player");
     const originParent = document.querySelector("div#main-panel");
-    const originSwitcherTarget = originParent.children[1];
-    const originTarget = originParent.children[2];
-    if (!originParent.contains(video)) {
-      originParent.insertBefore(video, originTarget);
-    }
-    if (!originParent.contains(switcher)) {
-      originSwitcherTarget.appendChild(switcher);
-    }
+    markMoviePlayerPath();
+    returnYtmHome(switcher, originParent);
     setTimeout(() => {
       window.dispatchEvent(new Event('resize'));
     }, 300);
@@ -1478,6 +1535,16 @@ const observerMovieModeSetup = () => {
     }
 
     moviemode = newMoviemode;
+    // 背景(#ytm-custom-bg)は body の直下にあり、wrapper の moviemode クラスが
+    // 届かない。CSS から動画モードを見分けられるよう body にも付ける
+    document.body.classList.toggle('ytm-movie-mode', !!moviemode);
+    // 動画モードは映像が背景を覆うので、Apple Music 風の背景を止める
+    syncFluidBg();
+    // 開いている PiP も、MV を映す形と歌詞の形を切り替える
+    if (typeof PipManager !== 'undefined') PipManager.syncVideoMode();
+    // 選んだ画質は動画モードの間だけ当てる
+    if (typeof VideoQuality !== 'undefined') VideoQuality.sync(!!moviemode);
+    if (!moviemode) ui.qualityMenu?.classList.remove('visible');
 
     classTargets = [];
     const wrapper = document.querySelector("#ytm-custom-wrapper");
@@ -1490,7 +1557,7 @@ const observerMovieModeSetup = () => {
     const playerBar = PlayerBar.get();
     pusher(playerBar);
     pusher(switcher);
-    const video = document.querySelector("ytmusic-player#player");
+    const video = liveYtmPlayer();
     pusher(video);
     const navBar = document.querySelector("ytmusic-nav-bar");
     pusher(navBar);
@@ -1529,22 +1596,13 @@ const observerMovieModeSetup = () => {
 };
 function changeUIWithMovieMode(changed) {
   if (!changed || changed === null) return;
-  const originParent = document.querySelector("div#main-panel");
-  const originTarget = originParent.children[2];
-  const customParent = document.querySelector("#ytm-custom-wrapper");
   const customSwitcherParent = document.querySelector("#ytm-custom-info-area");
   const switcher = document.querySelector("ytmusic-av-toggle");
-  const video = document.querySelector("ytmusic-player#player.style-scope.ytmusic-player-page");
-
-  if (moviemode) {
-    customParent.prepend(video);
+  if (moviemode && switcher && customSwitcherParent) {
+    rememberYtmHome(switcher);
     customSwitcherParent.appendChild(switcher);
   }
-  else {
-    if (!originParent.contains(video)) {
-      originParent.insertBefore(video, originTarget);
-    }
-  }
+  markMoviePlayerPath();
   setTimeout(() => {
     window.dispatchEvent(new Event('resize'));
   }, 100);
@@ -1573,11 +1631,55 @@ function isYTMPremiumUser() {
 // 読み込み直したりすると動画のまま残った。広告が挟まると tick が待つ間に
 // 決まるので、広告の出ない(Premium の)人ほど起きていた。決まるまで待つ。
 const PREFER_SONG_MAX_ATTEMPTS = 20;
+// 利用者が自分で「曲 / 動画」を押した曲。その曲ではもう「曲」へ寄せない。
+//
+// 曲が変わった直後は切り替えの準備ができるまで最大 6 秒ほど待って寄せるので、
+// その間に「動画」を押すと、押した直後に「曲」へ押し戻されていた(実機)。
+// 拡張自身が押すクリックは isTrusted が false なので、ここには入らない。
+let _userPlaybackModeKey = null;
+// 押した直後に曲のキーが変わったら、それは切り替えた先(MV と曲版)。
+// MV は曲名・アーティストの書き方が曲版と違うことがあり(例: 日向坂46「君はハニーデュー」)、
+// 別の曲に変わったと見なして「曲」へ押し戻していた(実機)。
+// しかもキーは 1 回では落ち着かない。切り替えの間にアーティスト名が
+// MediaSession の英字とプレイヤーバーの日本語の間を行き来する
+// (Hinatazaka46 → 日向坂46 → Hinatazaka46、実機)。最初の 1 回だけ許すと
+// 2 回目で押し戻され、何度も押さないと動画に入れなかった。
+//  ・押してから少しの間に変わったキーは、何回変わっても利用者が選んだもの
+//  ・その後も、曲名が同じならアーティスト名の書き方が変わっただけと見なす
+const USER_PLAYBACK_MODE_GRACE_MS = 4000;
+let _userPlaybackModeUntil = 0;
+const playbackModeKeyTitle = (key) => String(key || '').split('///')[0].trim().toLowerCase();
+// MV の無い曲。YTM は切り替えに toggle-disabled を付け、MV がある時だけ
+// selected-item-has-video を付ける(実機、未ログインでも同じ)。Immersion では
+// 切り替えを自分の場所へ移して色も付け直しているので、押せないことが見えず、
+// 「動画」を押せてしまっていた。押しても受け付けない(style.css で薄くもする)
+const avToggleHasNoVideo = (toggle) => !!toggle
+  && toggle.hasAttribute('toggle-disabled') && !toggle.hasAttribute('selected-item-has-video');
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  const btn = t && t.closest && t.closest('ytmusic-av-toggle .video-button');
+  if (!btn || !avToggleHasNoVideo(btn.closest('ytmusic-av-toggle'))) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+document.addEventListener('click', (e) => {
+  if (!e.isTrusted) return;
+  const t = e.target;
+  if (!(t && t.closest && t.closest('ytmusic-av-toggle'))) return;
+  _userPlaybackModeKey = currentKey;
+  _userPlaybackModeUntil = Date.now() + USER_PLAYBACK_MODE_GRACE_MS;
+}, true);
+
 function preferLyricsDefault(targetKey, attempt = 0) {
   if (!targetKey || currentKey !== targetKey) return;
   // 設定で切れるようにした。以前は曲が変わるたびに必ず「曲」へ寄せていたので、
   // 「動画」を選んでいても毎曲戻され、動画モードに留まる手段が無かった。
   if (!config.preferSongMode) return;
+  if (_userPlaybackModeKey && (Date.now() < _userPlaybackModeUntil
+    || playbackModeKeyTitle(_userPlaybackModeKey) === playbackModeKeyTitle(targetKey))) {
+    _userPlaybackModeKey = targetKey;
+  }
+  if (_userPlaybackModeKey === targetKey) return;
 
   const retry = () => {
     if (attempt < PREFER_SONG_MAX_ATTEMPTS) setTimeout(() => preferLyricsDefault(targetKey, attempt + 1), 300);
@@ -1921,6 +2023,29 @@ const translateTo = async (lines, langCode) => {
 };
 
 
+// ジャケットの画像。ふだんは MediaSession のものを使う。
+// 「動画」から「曲」へ戻した時、MediaSession の画像が MV のサムネイル
+// (i.ytimg.com/vi/<MV の ID>/…)のまま残ることがある(実機)。画像の ID が
+// 今の動画 ID と違えば古いものなので、プレイヤーバーに出ている今の曲の
+// ジャケット(googleusercontent なら大きいサイズに)を使う。
+const thumbVideoId = (src) => {
+  const m = /^https:\/\/i\d*\.ytimg\.com\/vi(?:_webp)?\/([\w-]{11})\//.exec(src || '');
+  return m ? m[1] : null;
+};
+const pickArtworkSrc = (sessionSrc) => {
+  const mode = document.querySelector('ytmusic-av-toggle')?.getAttribute('playback-mode');
+  if (mode !== 'ATV_PREFERRED') return sessionSrc;
+  const shownId = thumbVideoId(sessionSrc);
+  const currentId = getCurrentVideoId();
+  if (!shownId || !currentId || shownId === currentId) return sessionSrc;
+  // バーの中だけを見る。PlayerBar.query はバーに無いとページ全体から探すので、
+  // ホームや検索結果に並ぶ別の曲のジャケット(img.image)を拾うことがある
+  const barSrc = PlayerBar.get()?.querySelector('img.image, ytmusic-track-info img')?.src || '';
+  if (/googleusercontent\.com\//.test(barSrc)) return barSrc.replace(/=w\d+-h\d+[^/?#]*$/, '=w544-h544-l90-rj');
+  if (thumbVideoId(barSrc) === currentId) return barSrc;
+  return sessionSrc;
+};
+
 const getMetadata = () => {
   // Prefer MediaSession metadata (most accurate)
   if (navigator.mediaSession?.metadata) {
@@ -1929,7 +2054,7 @@ const getMetadata = () => {
       title: (title || '').toString(),
       artist: (artist || '').toString(),
       album: (album || '').toString(),
-      src: Array.isArray(artwork) && artwork.length ? artwork[artwork.length - 1].src : null
+      src: pickArtworkSrc(Array.isArray(artwork) && artwork.length ? artwork[artwork.length - 1].src : null)
     };
   }
 
@@ -2328,6 +2453,10 @@ function applyLyricsSourceBadgeText(el = document.getElementById('ytm-lyrics-sou
   if (!el || !el.dataset.sourceLabel) return;
   const parts = [el.dataset.sourceLabel];
   if (el.dataset.qualityKey) parts.push(t(el.dataset.qualityKey));
+  // 訳の出どころ(共有翻訳 / DeepL / Chrome 翻訳)。翻訳を出していない時は空。
+  if (config.useTrans && el.dataset.translationEngines) {
+    el.dataset.translationEngines.split(',').forEach(e => parts.push(t(`lyrics_trans_${e}`)));
+  }
   el.textContent = `${t('lyrics_source_prefix')}: ${parts.join(' / ')}`;
   el.title = t('lyrics_source_hint');
 }
@@ -2764,10 +2893,78 @@ const toLocalPlaybackTime = (rawTime) => {
   return Math.max(0, rawTime - offset);
 };
 
+// ── 動画モードの時刻合わせ(MV ⇔ 音源) ─────────────────────
+// 歌詞の時刻は音源(曲)の時刻。MV はイントロや途中の映像パートの分だけずれる
+// (NewJeans「Ditto」は 82 秒)。ログイン中は YTM が「音源の何秒が MV の何秒か」の
+// 対応表を持っているので(ytm-lyrics.js の YTMSegmentMap)、動画モードの間はそれで
+// 直す。表が無い時(未ログイン・対応の無い動画)は今まで通り直さない。
+// 表のどの区間にも入らない MV の時刻は、歌以外の場面(ドラマのパート等)。
+const MOVIE_SEGMENT_EDGE = 0.05;
+const MOVIE_ID_RECHECK_MS = 500;
+let _movieSegState = { at: 0, videoId: null, segments: null };
+const currentMovieSegments = () => {
+  if (typeof YTMSegmentMap === 'undefined' || moviemode !== true) return null;
+  const now = performance.now();
+  const st = _movieSegState;
+  if (now - st.at >= MOVIE_ID_RECHECK_MS || (st.videoId && st.segments === undefined)) {
+    st.at = now;
+    const id = getCurrentVideoId();
+    if (id !== st.videoId) { st.videoId = id; st.segments = undefined; _movieSkipTarget = -1; }
+    if (id && st.segments === undefined) {
+      const known = YTMSegmentMap.peek(id);
+      if (known !== undefined) st.segments = known;
+      else YTMSegmentMap.fetch(id);
+    }
+  }
+  return st.segments || null;
+};
+// MV の時刻 → 音源の時刻。cut は歌以外の場面、next はその後の最初の区間
+const movieToSongTime = (tv, segs) => {
+  for (const s of segs) {
+    if (tv >= s.videoStart - MOVIE_SEGMENT_EDGE && tv < s.videoStart + s.dur + MOVIE_SEGMENT_EDGE) {
+      return { time: Math.max(0, s.songStart + (tv - s.videoStart)), cut: false, next: null };
+    }
+  }
+  const next = segs.find(s => s.videoStart > tv) || null;
+  const last = segs[segs.length - 1];
+  // 歌以外の場面では、その後に歌い出す所の手前で止めておく(行は光らせない)
+  const time = next ? Math.max(0, next.songStart - 0.01) : last.songStart + last.dur;
+  return { time, cut: true, next };
+};
+// 音源の時刻 → MV の時刻(歌詞の行を押してシークする時)
+const songToMovieTime = (ts, segs) => {
+  let best = segs[0];
+  let bestDist = Infinity;
+  for (const s of segs) {
+    if (ts >= s.songStart && ts < s.songStart + s.dur) return s.videoStart + (ts - s.songStart);
+    const d = ts < s.songStart ? s.songStart - ts : ts - (s.songStart + s.dur);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  return best.videoStart + (ts - best.songStart);
+};
+// 歌以外の場面を飛ばす(設定、既定 切)。同じ場面で何度も飛ばさないよう、飛んだ先を覚える
+let _movieSkipTarget = -1;
+const applyMovieTime = (tv, v) => {
+  const segs = currentMovieSegments();
+  if (!segs) {
+    document.body.classList.remove('ytm-movie-cut');
+    return tv;
+  }
+  const m = movieToSongTime(tv, segs);
+  document.body.classList.toggle('ytm-movie-cut', m.cut);
+  if (m.cut && config.movieSkipScenes && v && !v.paused && m.next && _movieSkipTarget !== m.next.videoStart) {
+    _movieSkipTarget = m.next.videoStart;
+    try { v.currentTime = m.next.videoStart; } catch (e) { /* 飛ばせなければそのまま見る */ }
+  }
+  return m.time;
+};
+
 const getCurrentPlaybackTimeSec = () => {
   const v = document.querySelector('video');
   if (!v || typeof v.currentTime !== 'number' || Number.isNaN(v.currentTime)) return null;
   let t = toLocalPlaybackTime(v.currentTime);
+  const segs = currentMovieSegments();
+  if (segs) t = movieToSongTime(t, segs).time;
   const duration = Number.isFinite(v.duration) ? v.duration : null;
   t = Math.max(0, t + (config.syncOffset / 1000));
   if (typeof duration === 'number' && duration > 0) {
@@ -2784,7 +2981,10 @@ const getCurrentPlaybackTimeSec = () => {
 const seekToLyricTime = (lyricTime) => {
   const v = document.querySelector('video');
   if (!v || !Number.isFinite(lyricTime)) return;
-  const local = Math.max(0, lyricTime - (Number(config.syncOffset) || 0) / 1000);
+  let local = Math.max(0, lyricTime - (Number(config.syncOffset) || 0) / 1000);
+  // 動画モードで対応表がある時は、音源の時刻を MV の時刻に直してから飛ぶ
+  const segs = currentMovieSegments();
+  if (segs) local = songToMovieTime(local, segs);
   // 連続再生では video の時刻が曲の頭で 0 に戻らないので、曲の始まり(timeOffset)を足す
   v.currentTime = local + timeOffset;
 };
@@ -2904,6 +3104,11 @@ const SETTINGS_STORAGE_KEYS = [
   'ytm_lyric_stagger',
   'ytm_fade_past_lyrics',
   'ytm_prefer_song_mode',
+  'ytm_level_volume',
+  'ytm_video_quality',
+  'ytm_movie_lyrics',
+  'ytm_movie_skip_scenes',
+  'ytm_movie_letterbox', // 廃止した「黒帯を光で埋める」。残っている値をリセットで消す
   'ytm_apple_bg',
   'ytm_low_cpu_mode',
   'ytm_apple_sync_style',
@@ -2923,6 +3128,8 @@ const SETTINGS_STORAGE_KEYS = [
   'ytm_disabled_lyric_sources',
   'ytm_queue_pinned',
   'ytm_pip_auto_open',
+  'ytm_bar_autohide',
+  'ytm_korean_ruby',
 ];
 const MEANING_PINNED_SONGS_KEY = 'ytm_meaning_pinned_songs';
 let meaningPinnedSongs = new Set();
@@ -3512,10 +3719,18 @@ const normalizeTranslationsToLrcMapLocal = (input) => {
   return out;
 };
 
+// 「自動」は表示言語へ訳す。表示言語の既定はブラウザの言語(namespace.js)。
+const resolveTranslationLang = (lang) => {
+  const key = normalizeTranslationLangKey(lang);
+  if (key !== 'auto') return key;
+  const ui = normalizeTranslationLangKey(config.uiLang);
+  return ['ja', 'en', 'ko', 'zh'].includes(ui) ? ui : 'en';
+};
+
 const getRequestedTranslationLangs = () => {
   if (!config.useTrans) return [];
-  const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
-  const subLang = normalizeTranslationLangKey(config.subLang || '');
+  const mainLang = resolveTranslationLang(config.mainLang || 'original');
+  const subLang = resolveTranslationLang(config.subLang || '');
   const langs = [];
   if (mainLang && mainLang !== 'original') langs.push(mainLang);
   if (subLang && subLang !== 'original' && subLang !== mainLang) langs.push(subLang);
@@ -3534,8 +3749,8 @@ async function applyTranslations(baseLines, youtubeUrl) {
   const subLangStored = await storage.get('ytm_sub_lang');
   if (mainLangStored) config.mainLang = mainLangStored;
   if (subLangStored !== null && subLangStored !== undefined) config.subLang = subLangStored;
-  const mainLang = normalizeTranslationLangKey(config.mainLang || 'original');
-  const subLang = normalizeTranslationLangKey(config.subLang || '');
+  const mainLang = resolveTranslationLang(config.mainLang || 'original');
+  const subLang = resolveTranslationLang(config.subLang || '');
   const langsToFetch = getRequestedTranslationLangs();
   if (!langsToFetch.length) return baseLines;
 
@@ -3580,10 +3795,15 @@ async function applyTranslations(baseLines, youtubeUrl) {
     if (lrc) {
       const parsed = parseLRCNoFlag(lrc);
       transLinesByLang[langKey] = parsed;
-    } else if (!config.useSharedTranslateApi) {
+    } else {
+      // 共有翻訳に無い言語は機械翻訳で埋める(DeepL のキーがあれば DeepL、
+      // 無ければ Chrome 内蔵)。共有翻訳が後から届けば描き直しでそちらが勝つ。
       needDeepL.push(langKey);
     }
   });
+  const engines = new Set();
+  if (Object.keys(transLinesByLang).length) engines.add('shared');
+  let builtinPromptWant = null;
 
   if (needDeepL.length && config.deepLKey) {
     for (const lang of needDeepL) {
@@ -3597,9 +3817,27 @@ async function applyTranslations(baseLines, youtubeUrl) {
           text: translatedTexts[i]
         }));
         transLinesByLang[lang] = lines;
+        engines.add('deepl');
+      }
+    }
+  } else if (needDeepL.length && hasBuiltinTranslate()) {
+    // Chrome 内蔵の翻訳は 1 曲 2〜3 秒かかる。歌詞はまず原文だけで出し、
+    // 訳し終わったら描き直す(requestBuiltinTranslation)。
+    const texts = baseLines.map(l => String(l?.text ?? ''));
+    for (const lang of needDeepL) {
+      const done = BuiltinTranslate.peek(texts, lang);
+      // stale = 言語データが増えたので訳し直す。訳し終わるまでは前の訳を出す。
+      if (!done || done.stale) requestBuiltinTranslation(texts, lang);
+      if (!done) continue;
+      if (done.missing.length && !done.stale && !builtinPromptWant) builtinPromptWant = { missing: done.missing };
+      if (done.lines.some(Boolean)) {
+        transLinesByLang[lang] = baseLines.map((l, i) => ({ time: l.time, text: done.lines[i] ?? l.text }));
+        engines.add('builtin');
       }
     }
   }
+  syncBuiltinDownloadPrompt(builtinPromptWant);
+  setTranslationEngineBadge(engines);
 
   const alignedMap = buildAlignedTranslations(baseLines, transLinesByLang);
   const final = baseLines.map(l => ({ ...l }));
@@ -3631,6 +3869,97 @@ async function applyTranslations(baseLines, youtubeUrl) {
   }
   dedupePrimarySecondary(final);
   return final;
+}
+
+// ── Chrome 内蔵の翻訳(builtin-translate.js) ─────────────────
+const hasBuiltinTranslate = () => typeof BuiltinTranslate !== 'undefined' && BuiltinTranslate.isSupported();
+// 進み具合は利用者が落とし始めた時だけ出す。落とし済みのデータを読み込む時も
+// Chrome は進み具合(0→1)を知らせてくるので、それで「ダウンロード中」と出さない。
+const builtinProgress = () => (
+  builtinDownloadStarted && typeof BuiltinTranslate !== 'undefined' ? BuiltinTranslate.progress() : null
+);
+
+// 訳し終わったら、同じ曲のままなら描き直す。2 回目は peek で結果が取れる。
+function requestBuiltinTranslation(texts, lang) {
+  const keyAtStart = currentKey;
+  const rawAtStart = lastRawLyricsText;
+  BuiltinTranslate.translateLines(texts, lang).then((res) => {
+    if (!config.useTrans || keyAtStart !== currentKey || rawAtStart !== lastRawLyricsText) return;
+    if (res.lines.some(Boolean) || res.missing.length) applyLyricsText(rawAtStart);
+  }).catch((e) => console.warn('Chrome translation failed', e));
+}
+
+// 初めての言語は Chrome が言語データを落とす。落とし始めはクリックの中でしか
+// できないので、訳せない言語がある時は歌詞の下にボタンを出す。
+let builtinPromptMissing = null;
+let builtinDownloadStarted = false;
+
+function syncBuiltinDownloadPrompt(want) {
+  builtinPromptMissing = want ? want.missing : null;
+  let el = document.getElementById('ytm-trans-dl');
+  const progress = builtinProgress();
+  if (!builtinPromptMissing && progress === null) {
+    el?.classList.remove('visible');
+    return;
+  }
+  if (!el) {
+    el = createEl('div', 'ytm-trans-dl', '', '');
+    el.setAttribute('role', 'status');
+    const text = createEl('span', '', 'ytm-trans-dl-text', '');
+    const btn = createEl('button', '', 'ytm-trans-dl-btn', '');
+    btn.type = 'button';
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      startBuiltinDownload(builtinPromptMissing);
+    });
+    el.append(text, btn);
+    document.body.appendChild(el);
+  }
+  const text = el.querySelector('.ytm-trans-dl-text');
+  const btn = el.querySelector('.ytm-trans-dl-btn');
+  if (progress !== null) {
+    text.textContent = t('trans_dl_progress').replace('{p}', String(Math.floor(progress * 100)));
+    btn.hidden = true;
+  } else {
+    text.textContent = t('trans_dl_prompt');
+    btn.textContent = t('trans_dl_button');
+    btn.hidden = false;
+  }
+  el.classList.add('visible');
+}
+
+// クリックの中で呼ぶ。終わったら(失敗も含めて)今の曲を描き直す。
+function startBuiltinDownload(pairs) {
+  if (!Array.isArray(pairs) || !pairs.length) return;
+  builtinDownloadStarted = true;
+  BuiltinTranslate.download(pairs).then((made) => {
+    if (made.some(m => !m || m === 'unavailable')) showToast(t('trans_dl_failed'));
+  });
+  syncBuiltinDownloadPrompt({ missing: pairs });
+}
+
+if (typeof BuiltinTranslate !== 'undefined') BuiltinTranslate.onChange(() => {
+  if (!builtinDownloadStarted) return;
+  updateTransEngineDesc();
+  if (builtinProgress() !== null) {
+    syncBuiltinDownloadPrompt(builtinPromptMissing ? { missing: builtinPromptMissing } : null);
+    return;
+  }
+  builtinDownloadStarted = false;
+  updateTransEngineDesc();
+  syncBuiltinDownloadPrompt(null);
+  if (config.useTrans && lastRawLyricsText) applyLyricsText(lastRawLyricsText);
+});
+
+// 取得元の表示に、訳がどこから来たかを添える(機械翻訳だと分かるように)。
+function setTranslationEngineBadge(engines) {
+  const el = document.getElementById('ytm-lyrics-source-debug');
+  if (!el) return;
+  const order = ['shared', 'deepl', 'builtin'];
+  const list = order.filter(e => engines && engines.has(e));
+  if (list.join(',') === (el.dataset.translationEngines || '')) return;
+  el.dataset.translationEngines = list.join(',');
+  applyLyricsSourceBadgeText(el);
 }
 
 const buildAlignedTranslations = (baseLines, transLinesByLang) => {
@@ -3982,33 +4311,69 @@ const buildLyricWordUnits = (chars, lineEndSec) => {
 // Range で測る。こちらは変形が乗るが、使うのは語の中での比だけなので影響しない。
 // 折り返した行では、2行目以降の語を1行目の右へ continue させた座標に直す
 // (読む順に一本の帯として扱うため)。
-const measureLyricLineSweep = (row) => {
+// 読む(offsetLeft・Range の幅・文字サイズ)と書く(--wx などの CSS 変数)を
+// 分けてある。以前は語ごとに「読む → --wx を書く」を繰り返していて、書いた
+// 直後の次の語の offsetLeft が、そのたびにスタイルの再計算をその場で走らせた。
+// 歌詞が単語同期に切り替わった直後は、全行をまとめて測るので
+// (prefetchLyricLineSweeps)、1 フレームが 50〜67ms に伸び、
+// 最初の数行のスクロールがカクついていた(実機、再計算 760 回 / 0.9 秒)。
+// 何行かまとめて測る時は、全部読んでから全部書く。
+const readLyricLineSweep = (row) => {
   // PIP は別ウィンドウ・別文書。Range も getComputedStyle も
   // その文書のものを使わないと、取れる値が別の窓のものになる。
   const doc = row.ownerDocument || (typeof document !== 'undefined' ? document : null);
   const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
   const spans = row._ytmWordSpans;
-  if (!doc) {
-    row._sweepReady = true;
-    return;
-  }
-  if (!Array.isArray(spans) || !spans.length) {
-    row._sweepReady = true;
-    return;
-  }
+  if (!doc) return { row, done: true };
+  if (!Array.isArray(spans) || !spans.length) return { row, done: true };
   // 歌詞パネルを開く前など、まだ場所を持っていない時に測ると
   // 全部 0 になる。済んだ印を付けずに帰って、あとで測り直させる。
-  if (!row.offsetWidth && !row.offsetHeight) return;
-  row._sweepReady = true;
+  if (!row.offsetWidth && !row.offsetHeight) return null;
 
+  try {
+    const geo = spans.map(span => ({ top: span.offsetTop, left: span.offsetLeft, width: span.offsetWidth, fractions: null }));
+    const range = doc.createRange();
+    spans.forEach((span, k) => {
+      const node = span.firstChild;
+      const offsets = span._offsets;
+      if (!(node && node.nodeType === 3 && Array.isArray(offsets) && offsets.length > 1)) return;
+      const len = node.data.length;
+      const raw = [];
+      for (const offset of offsets) {
+        range.setStart(node, 0);
+        range.setEnd(node, Math.min(offset, len));
+        raw.push(range.getBoundingClientRect().width);
+      }
+      range.setStart(node, 0);
+      range.setEnd(node, len);
+      const last = range.getBoundingClientRect().width;
+      if (last > 0) geo[k].fractions = raw.map(w => w / last);
+    });
+    const fontPx = (view ? parseFloat(view.getComputedStyle(row).fontSize) : NaN) || 32;
+    return { row, spans, geo, fontPx };
+  } catch (e) {
+    return { row, failed: true };
+  }
+};
+
+const applyLyricLineSweep = (plan) => {
+  if (!plan) return;
+  const { row } = plan;
+  row._sweepReady = true;
+  if (plan.done) return;
+  if (plan.failed) {
+    row._sweepT = null;
+    row._sweepX = null;
+    return;
+  }
+  const { spans, geo, fontPx } = plan;
   try {
     // 1. 語を表示上の行ごとにまとめ、行の幅を出す
     const rowsByTop = new Map();
-    for (const span of spans) {
-      const top = span.offsetTop;
-      let bucket = rowsByTop.get(top);
-      if (!bucket) rowsByTop.set(top, (bucket = { right: 0 }));
-      bucket.right = Math.max(bucket.right, span.offsetLeft + span.offsetWidth);
+    for (const g of geo) {
+      let bucket = rowsByTop.get(g.top);
+      if (!bucket) rowsByTop.set(g.top, (bucket = { right: 0 }));
+      bucket.right = Math.max(bucket.right, g.left + g.width);
     }
     const tops = Array.from(rowsByTop.keys()).sort((a, b) => a - b);
     let carry = 0;
@@ -4020,33 +4385,14 @@ const measureLyricLineSweep = (row) => {
     // 2. 語の開始位置を CSS 変数として渡し、文字ごとの位置表を作る
     const times = [];
     const xs = [];
-    const range = doc.createRange();
-
-    for (const span of spans) {
-      const origin = rowsByTop.get(span.offsetTop)?.origin || 0;
-      const wordX = origin + span.offsetLeft;
-      const width = span.offsetWidth;
+    spans.forEach((span, k) => {
+      const g = geo[k];
+      const origin = rowsByTop.get(g.top)?.origin || 0;
+      const wordX = origin + g.left;
+      const width = g.width;
       span._wx = wordX;
       span.style.setProperty('--wx', String(wordX));
-
-      const node = span.firstChild;
-      const offsets = span._offsets;
-      let fractions = null;
-      if (node && node.nodeType === 3 && Array.isArray(offsets) && offsets.length > 1) {
-        const len = node.data.length;
-        const raw = [];
-        for (const offset of offsets) {
-          range.setStart(node, 0);
-          range.setEnd(node, Math.min(offset, len));
-          raw.push(range.getBoundingClientRect().width);
-        }
-        const last = (() => {
-          range.setStart(node, 0);
-          range.setEnd(node, len);
-          return range.getBoundingClientRect().width;
-        })();
-        if (last > 0) fractions = raw.map(w => w / last);
-      }
+      const fractions = g.fractions;
 
       span._times.forEach((t, i) => {
         if (t === null) return;
@@ -4061,7 +4407,7 @@ const measureLyricLineSweep = (row) => {
         times.push(span._end);
         xs.push(wordX + width);
       }
-    }
+    });
 
     // 3. 時刻で並べ、単調にする(同時刻の重複はあとの方を残す)
     const order = times.map((t, i) => i).sort((a, b) => times[a] - times[b] || xs[a] - xs[b]);
@@ -4082,7 +4428,6 @@ const measureLyricLineSweep = (row) => {
     row._sweepIndex = 0;
 
     // 4. ぼかし半幅は文字サイズ基準の px。行に一度だけ置く。
-    const fontPx = (view ? parseFloat(view.getComputedStyle(row).fontSize) : NaN) || 32;
     row.style.setProperty('--feather', (WORD_FEATHER_EM * fontPx).toFixed(1));
 
     // 5. 語ごとの強調の強さ。長さで決まるので毎フレーム計算しない。
@@ -4119,6 +4464,8 @@ const measureLyricLineSweep = (row) => {
     row._sweepX = null;
   }
 };
+
+const measureLyricLineSweep = (row) => applyLyricLineSweep(readLyricLineSweep(row));
 
 // ── 塗りの先端をなめらかに動かす ──────────────────────────
 // 節目(文字の開始時刻とその横位置)の間を直線で結ぶと、節目ごとに
@@ -4212,7 +4559,37 @@ const MOTION_MAX_FRAMES = 40;
 const MOTION_RESYNC_SEC = 0.08;
 
 // 動きを持っている行。一時停止の時にまとめて止めるために覚えておく。
+//
+// 画面から外れた行は必ず外す(forgetDetachedLyricMotionRows)。以前は足すだけで
+// 一度も外さず、曲が変わって消えた行が動き(Web Animations)ごと残り続けた。
+// PiP の行も入るので、PiP を閉じるたびに閉じた窓の文書がまるごと残り、
+// 「タブを離れた時に PiP を開く」ではタブを切り替えるたびに 1 つずつ溜まって
+// いた(実測: 開閉 1 回で文書 +1・ノード +86。何 GB にもなるという報告の原因)。
 const _lyricMotionRows = new Set();
+
+const dropLyricWordMotion = (row) => {
+  const motions = row._motions;
+  if (motions) {
+    for (const animation of motions) {
+      try { animation.cancel(); } catch (e) { /* 破棄済み */ }
+    }
+  }
+  row._motions = null;
+  row._motionReady = false;
+  _lyricMotionRows.delete(row);
+};
+
+// 外す行: 文書から外れた行と、今の画面でも今開いている PiP でもない文書の行。
+// 閉じた PiP の行は、閉じた窓の文書の中では繋がったまま(isConnected が true)
+// なので、文書で見分ける。
+const forgetDetachedLyricMotionRows = () => {
+  const pipWin = typeof PipManager !== 'undefined' ? PipManager.pipWindow : null;
+  const pipDoc = pipWin && !pipWin.closed ? pipWin.document : null;
+  for (const row of _lyricMotionRows) {
+    const doc = row.ownerDocument;
+    if (!row.isConnected || (doc !== document && doc !== pipDoc)) dropLyricWordMotion(row);
+  }
+};
 
 // 動くのは伸ばした音だけ。ふくらんで、元の高さと大きさへ戻る。
 const buildLyricWordKeyframes = (span, origin) => {
@@ -4239,50 +4616,14 @@ const buildLyricWordKeyframes = (span, origin) => {
   return { frames, delay: (from - origin) * 1000, duration: dur * 1000 };
 };
 
-// 塗りの先端もキーフレームで渡す。節目(文字ごとの時刻と横位置)を
-// そのままキーフレームにして、区間ごとに緩急を付ける。
-// 3次エルミートは3次ベジェとまったく同じ形に書き直せるので、
-// 前に入れた滑らかな曲線を1つも崩さずにブラウザへ渡せる。
-// 節目の数だけで済むので、細かく刻んでキーフレームを量産しなくてよい。
-const buildLyricSweepKeyframes = (row) => {
-  const ts = row._sweepT;
-  const xs = row._sweepX;
-  const ms = row._sweepM;
-  if (!ts || ts.length < 2) return null;
-
-  const from = ts[0];
-  const total = ts[ts.length - 1] - from;
-  if (!(total > 0)) return null;
-
-  const frames = [];
-  for (let i = 0; i < ts.length; i++) {
-    const offset = (ts[i] - from) / total;
-    if (frames.length && offset <= frames[frames.length - 1].offset) continue;
-    const frame = { offset: Math.min(1, Math.max(0, offset)), '--sweep': xs[i].toFixed(2) };
-
-    if (i < ts.length - 1 && ms) {
-      const h = ts[i + 1] - ts[i];
-      const dx = xs[i + 1] - xs[i];
-      if (h > 0 && dx > 0) {
-        // エルミート → ベジェ。制御点の x は 1/3, 2/3 で固定になる。
-        const y1 = Math.min(1, Math.max(0, (ms[i] * h) / (3 * dx)));
-        const y2 = Math.min(1, Math.max(0, 1 - (ms[i + 1] * h) / (3 * dx)));
-        frame.easing = `cubic-bezier(0.3333, ${y1.toFixed(4)}, 0.6667, ${y2.toFixed(4)})`;
-      } else {
-        frame.easing = 'linear';
-      }
-    }
-    frames.push(frame);
-  }
-
-  if (frames.length < 2) return null;
-  frames[0].offset = 0;
-  frames[frames.length - 1].offset = 1;
-  return { frames, from, duration: total * 1000 };
-};
-
 const createLyricWordMotion = (row) => {
   row._motionReady = true;
+  // 動画モードでは語を持ち上げない。合成側のアニメーションでも、動いている間は
+  // 画面の書き換えのたびに(120Hz なら 1 秒 120 回)映像ごと全面を合成し直す。
+  // 映像そのものは 30 コマ前後なので、歌詞を出すだけで GPU が倍以上になっていた
+  // (実測: 歌詞を隠すと GPU の使用率が 42% → 23%)。塗りと光は残す。
+  row._motionMovie = typeof moviemode !== 'undefined' && moviemode === true;
+  if (row._motionMovie) return;
   const spans = row._ytmWordSpans;
   if (!spans || !spans.length) return;
   if (typeof spans[0].animate !== 'function') return;   // 使えない環境では動かさない
@@ -4293,23 +4634,12 @@ const createLyricWordMotion = (row) => {
 
   const animations = [];
 
-  // 塗り。行に1本だけ。
-  const sweep = buildLyricSweepKeyframes(row);
-  if (sweep && typeof row.animate === 'function') {
-    try {
-      const animation = row.animate(sweep.frames, {
-        duration: sweep.duration,
-        delay: (sweep.from - origin) * 1000,
-        fill: 'both',
-        easing: 'linear',   // 緩急はキーフレームごとに付けてある
-      });
-      animation.pause();
-      animations.push(animation);
-      row._sweepAnimated = true;
-    } catch (e) {
-      row._sweepAnimated = false;
-    }
-  }
+  // 塗り(--sweep)はアニメーションにしない。ループが lyricSweepAt で書く。
+  // 以前はキーフレームで渡していたが、CSS 変数のアニメーションは合成側で
+  // 走れず、画面の書き換えの回数(120Hz の画面なら 1 秒 120 回)だけ
+  // メインスレッドで行のスタイルを計算し直して描き直していた。ループで
+  // 書けば回数を決められる(動画モードは 30 回。scheduleNextFrame)。
+  // 曲線は同じ(lyricSweepAt とキーフレームはどちらも同じエルミート曲線)。
 
   for (const span of spans) {
     // 速い語はまったく動かさない。動かすとその語だけ高さがずれて、
@@ -4330,7 +4660,10 @@ const createLyricWordMotion = (row) => {
     } catch (e) { /* 作れなくても塗りは動く */ }
   }
   row._motions = animations;
-  if (animations.length) _lyricMotionRows.add(row);
+  if (animations.length) {
+    forgetDetachedLyricMotionRows();
+    _lyricMotionRows.add(row);
+  }
 };
 
 const syncLyricWordMotion = (row, t, rate) => {
@@ -4387,6 +4720,7 @@ const stopLyricWordMotion = (row) => {
 
 // 一時停止でループが止まる時。走らせたままだと歌詞だけ動き続ける。
 const pauseAllLyricWordMotion = () => {
+  forgetDetachedLyricMotionRows();
   for (const row of _lyricMotionRows) {
     const motions = row._motions;
     if (!motions) continue;
@@ -4447,13 +4781,11 @@ const paintLyricWordRow = (row, t, rate = 1) => {
 
   // 持ち上がりと膨らみは合成側に任せる。ここで transform を毎フレーム
   // 書くと、縦位置が整数ピクセルに丸められて 1〜2 回のジャンプになる。
+  if (row._motionReady && row._motionMovie !== (typeof moviemode !== 'undefined' && moviemode === true)) dropLyricWordMotion(row);
   if (!row._motionReady) createLyricWordMotion(row);
   syncLyricWordMotion(row, t, rate);
 
-  // 塗りもキーフレームで渡してある。渡せなかった時だけ自分で書く。
-  if (!row._sweepAnimated) {
-    writeLyricVar(row, '--sweep', '_sweep', lyricSweepAt(row, t), SWEEP_STEP);
-  }
+  writeLyricVar(row, '--sweep', '_sweep', lyricSweepAt(row, t), SWEEP_STEP);
 
   // 光は位置を動かさないので丸めの問題が無い。合成できないプロパティ
   // なので、動きと同じアニメーションに混ぜると transform まで
@@ -4558,14 +4890,17 @@ const prefetchLyricLineSweeps = (rows) => {
   const step = () => {
     // 1フレームに詰め込みすぎると、そのフレームだけ伸びる
     const end = Math.min(index + 8, pending.length);
+    const batch = [];
     for (; index < end; index++) {
       const row = pending[index];
       if (!row.isConnected || !row.offsetWidth) continue;
       // 複製されてきた行は語の情報を持っていないので、まず組み直す
       if (!row._ytmWordSpans && !row._ytmRehydrated) rehydrateLyricWordRow(row);
       if (!row._ytmWordSpans) continue;
-      measureLyricLineSweep(row);
+      batch.push(row);
     }
+    // 全部読んでから全部書く(書いた後に読むと、そのたびに再計算が走る)
+    batch.map(readLyricLineSweep).forEach(applyLyricLineSweep);
     if (index < pending.length) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
@@ -4585,7 +4920,7 @@ const resetLyricWordRow = (row) => {
   const spans = row._ytmWordSpans;
   if (!spans || !spans.length) return;
   stopLyricWordMotion(row);
-  if (!row._sweepAnimated) writeLyricVar(row, '--sweep', '_sweep', 0, SWEEP_STEP);
+  writeLyricVar(row, '--sweep', '_sweep', 0, SWEEP_STEP);
   row._sweepIndex = 0;
   for (let i = 0; i < spans.length; i++) {
     if (spans[i]._emp) writeLyricVar(spans[i], '--wg', '_wg', 0, WORD_STEP);
@@ -4871,6 +5206,10 @@ async function applyLyricsText(rawLyrics) {
   document.body.classList.toggle('ytm-duet-mode', hasDuetSub);
 
   let finalLines = baseLines;
+  if (!config.useTrans) {
+    syncBuiltinDownloadPrompt(null);
+    setTranslationEngineBadge(null);
+  }
   if (config.useTrans) {
     const translated = await applyTranslations(baseLines, videoUrl);
     // applyTranslations rebuilds objects, so re-attach duetSide by index
@@ -5822,30 +6161,30 @@ function setupUploadMenu(uploadBtn) {
   ui.btnArea.style.position = 'relative';
   const menu = createEl('div', 'ytm-upload-menu', 'ytm-upload-menu');
   menu.innerHTML = `
-      <div class="ytm-upload-menu-title">Lyrics</div>
+      <div class="ytm-upload-menu-title" data-ytm-text="menu_lyrics_title">${t('menu_lyrics_title')}</div>
       <button class="ytm-upload-menu-item" data-action="local">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg></span>
-        <span>ローカル歌詞読み込み / ReadLyrics</span>
+        <span data-ytm-text="menu_read_local">${t('menu_read_local')}</span>
       </button>
       <button class="ytm-upload-menu-item" data-action="add-sync">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg></span>
-        <span>歌詞同期を追加 / AddTiming</span>
+        <span data-ytm-text="menu_add_sync">${t('menu_add_sync')}</span>
       </button>
       <button class="ytm-upload-menu-item" data-action="find-alternates">
         <span class="ytm-upload-menu-item-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="vertical-align: -0.15em; margin-right: 6px;"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg></span>
-        <span>他の取得元から探す / OtherSources</span>
+        <span data-ytm-text="menu_other_sources">${t('menu_other_sources')}</span>
       </button>
       <div class="ytm-upload-menu-offset">
-        <div class="ytm-upload-menu-subtitle">ズレを直す / Timing</div>
+        <div class="ytm-upload-menu-subtitle" data-ytm-text="menu_timing">${t('menu_timing')}</div>
         <div class="ytm-offset-row">
-          <button class="ytm-offset-btn" data-action="offset-minus" title="歌詞を早める">−</button>
+          <button class="ytm-offset-btn" data-action="offset-minus" data-ytm-title="menu_offset_earlier" title="${t('menu_offset_earlier')}">−</button>
           <span class="ytm-offset-value" data-role="offset-value">0.0s</span>
-          <button class="ytm-offset-btn" data-action="offset-plus" title="歌詞を遅らせる">＋</button>
-          <button class="ytm-offset-btn ytm-offset-reset" data-action="offset-reset" title="0 に戻す">⟲</button>
+          <button class="ytm-offset-btn" data-action="offset-plus" data-ytm-title="menu_offset_later" title="${t('menu_offset_later')}">＋</button>
+          <button class="ytm-offset-btn ytm-offset-reset" data-action="offset-reset" data-ytm-title="menu_offset_reset" title="${t('menu_offset_reset')}">⟲</button>
         </div>
       </div>
       <div class="ytm-upload-menu-candidates" style="display:none;">
-        <div class="ytm-upload-menu-subtitle">別の歌詞を選択</div>
+        <div class="ytm-upload-menu-subtitle" data-ytm-text="menu_pick_other">${t('menu_pick_other')}</div>
         <div class="ytm-upload-menu-candidate-list"></div>
       </div>
     `;
@@ -5914,6 +6253,67 @@ function setupUploadMenu(uploadBtn) {
   }
   refreshCandidateMenu();
   refreshLockMenu();
+}
+
+// 画質のメニュー。YouTube と同じく、選べる画質を高い順に並べ、先頭に「自動」。
+// 自動の時は今の画質を添える(何が選ばれているのか分かるように)。
+// 開くたびに作り直す(動画ごとに選べる画質が違う)。
+function setupQualityMenu(qualityBtn) {
+  if (!ui.btnArea || ui.qualityMenu) return;
+  ui.btnArea.style.position = 'relative';
+  const menu = createEl('div', 'ytm-quality-menu', 'ytm-upload-menu ytm-quality-menu');
+  menu.setAttribute('role', 'menu');
+  ui.btnArea.appendChild(menu);
+  ui.qualityMenu = menu;
+
+  const render = () => {
+    const { current, label, levels } = VideoQuality.read();
+    const choice = VideoQuality.getChoice();
+    menu.replaceChildren();
+    const title = createEl('div', '', 'ytm-upload-menu-title', t('btn_video_quality'));
+    menu.appendChild(title);
+    const items = [{ quality: 'auto', text: label ? `${t('quality_auto')} (${label})` : t('quality_auto') }]
+      .concat(levels.map(l => ({ quality: l.quality, text: l.label })));
+    // 選んだ画質がこの動画に無い時(1440p を選んで 1080p までの動画)は、
+    // 実際に当たっている一番近い画質に印を付ける
+    const available = new Set(items.map(i => i.quality));
+    const marked = available.has(choice) ? choice : current;
+    items.forEach((item) => {
+      const btn = createEl('button', '', 'ytm-upload-menu-item ytm-quality-item');
+      btn.type = 'button';
+      btn.setAttribute('role', 'menuitemradio');
+      btn.dataset.quality = item.quality;
+      const selected = item.quality === marked;
+      btn.setAttribute('aria-checked', selected ? 'true' : 'false');
+      if (selected) btn.classList.add('is-selected');
+      const check = createEl('span', '', 'ytm-upload-menu-item-icon', selected ? '✓' : '');
+      const text = createEl('span', '', '', '');
+      text.textContent = item.text;
+      btn.append(check, text);
+      menu.appendChild(btn);
+    });
+  };
+
+  const close = () => menu.classList.remove('visible');
+  qualityBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (menu.classList.contains('visible')) { close(); return; }
+    ui.uploadMenu?.classList.remove('visible');
+    render();
+    menu.classList.add('visible');
+  });
+  menu.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const item = ev.target.closest('.ytm-quality-item');
+    if (!item) return;
+    VideoQuality.setChoice(item.dataset.quality);
+    close();
+  });
+  document.addEventListener('click', (ev) => {
+    if (!menu.classList.contains('visible')) return;
+    if (menu.contains(ev.target) || qualityBtn.contains(ev.target)) return;
+    close();
+  }, true);
 }
 
 function setupDeleteDialog(trashBtn) {
@@ -6102,7 +6502,9 @@ async function initSettings() {
   const weightStored = await storage.get('ytm_lyric_weight');
   if (weightStored) config.lyricWeight = weightStored;
   const brightStored = await storage.get('ytm_bg_brightness');
-  if (brightStored) config.bgBrightness = brightStored;
+  if (brightStored !== null && brightStored !== undefined && brightStored !== '') {
+    config.bgBrightness = normalizeBgBrightness(brightStored);
+  }
   const uiScaleStored = await storage.get('ytm_ui_scale');
   if (uiScaleStored !== null) config.uiScale = normalizeUiScale(uiScaleStored);
 
@@ -6157,12 +6559,36 @@ function isInsideSettingsUi(target) {
 // 保存前に書き換わる config の項目。閉じた時にここへ戻す。
 const SETTINGS_LIVE_KEYS = ['uiScale', 'lyricWeight', 'bgBrightness', 'mainLang', 'subLang', 'lyricSourceMode', 'uiLang'];
 let settingsSession = null;
+
+// 自動保存。設定を変えたら少し待って保存する(続けて動かした時は 1 回にまとめる)。
+// 保存中にまた変わったら、終わってからもう一度保存する。
+const SETTINGS_AUTOSAVE_MS = 300;
+let settingsAutosaveTimer = null;
+let settingsCommitInFlight = null;
+let settingsCommitAgain = false;
+function runSettingsAutosave() {
+  settingsAutosaveTimer = null;
+  const commit = ui.settings && ui.settings._commitSettings;
+  if (!commit || !settingsSession) return;
+  if (settingsCommitInFlight) { settingsCommitAgain = true; return; }
+  settingsCommitInFlight = Promise.resolve(commit({ close: false }))
+    .catch((e) => console.warn('[YTM] 設定の自動保存に失敗', e))
+    .finally(() => {
+      settingsCommitInFlight = null;
+      if (settingsCommitAgain) { settingsCommitAgain = false; runSettingsAutosave(); }
+    });
+}
+function scheduleSettingsAutosave() {
+  clearTimeout(settingsAutosaveTimer);
+  settingsAutosaveTimer = setTimeout(runSettingsAutosave, SETTINGS_AUTOSAVE_MS);
+}
 let settingsActiveTab = 'visuals';
 
 const disabledSourcesKey = (list) => normalizeDisabledLyricSources(list).sort().join(',');
 
 function setOrClearRootVar(name, value) {
-  if (value) document.documentElement.style.setProperty(name, value);
+  // 0 は値として残す(背景の明るさ 0 = 真っ黒)
+  if (value !== null && value !== undefined && value !== '') document.documentElement.style.setProperty(name, String(value));
   else document.documentElement.style.removeProperty(name);
 }
 
@@ -6187,6 +6613,26 @@ async function openSettings() {
 
 function closeSettings({ saved = false } = {}) {
   if (!ui.settings || !ui.settings.classList.contains('active')) return;
+  // 変えた直後(自動保存の待ち)や保存の途中に閉じられたら、捨てずに保存してから閉じる
+  const commit = ui.settings._commitSettings;
+  if (!saved && commit) {
+    const pending = !!settingsAutosaveTimer;
+    if (pending) {
+      clearTimeout(settingsAutosaveTimer);
+      settingsAutosaveTimer = null;
+    }
+    const finish = () => (pending ? commit({ close: true }) : closeSettings({ saved: true }));
+    if (settingsCommitInFlight) {
+      settingsCommitInFlight.then(finish);
+      return;
+    }
+    if (pending) {
+      settingsCommitInFlight = Promise.resolve(finish())
+        .catch((e) => console.warn('[YTM] 設定の保存に失敗', e))
+        .finally(() => { settingsCommitInFlight = null; });
+      return;
+    }
+  }
   ui.settings.classList.remove('active');
   document.getElementById('ui-lang-etc-menu')?.style.setProperty('display', 'none');
   const session = settingsSession;
@@ -6375,6 +6821,77 @@ function mountExtraProvidersFrame() {
 
 // 設定パネルの書きかけ(保存前の入力)。id の付いた input だけを見る。
 // 差し込んだ許可ページ(iframe)の中はその場で保存されるので含めない。
+// 翻訳の説明。どこで訳すかを書く(DeepL / Chrome / どちらも無い)。
+function updateTransEngineDesc() {
+  const el = document.getElementById('trans-engine-desc');
+  if (!el) return;
+  const key = (document.getElementById('deepl-key-input')?.value || '').trim();
+  const progress = builtinProgress();
+  if (progress !== null) {
+    el.textContent = t('trans_dl_progress').replace('{p}', String(Math.floor(progress * 100)));
+  } else if (key) {
+    el.textContent = t('settings_trans_desc_deepl');
+  } else if (hasBuiltinTranslate()) {
+    el.textContent = t('settings_trans_desc_builtin');
+  } else {
+    el.textContent = t('settings_trans_desc_none');
+  }
+}
+
+// 設定で翻訳を入れた時(クリックの中)に、今の曲を訳すのに要る言語データを落とし始める。
+// DeepL のキーがある時や、曲がまだ無い時は何もしない(曲の画面のボタンで落とせる)。
+function prepareBuiltinTranslation() {
+  if (!hasBuiltinTranslate()) return;
+  if ((document.getElementById('deepl-key-input')?.value || '').trim()) return;
+  const texts = (Array.isArray(lyricsData) ? lyricsData : []).map(l => String(l?.text ?? ''));
+  if (!texts.some(s => s.trim())) return;
+  const mainLang = resolveTranslationLang(config.mainLang || 'original');
+  const subLang = resolveTranslationLang(config.subLang || '');
+  const targets = [...new Set([mainLang, subLang].filter(l => l && l !== 'original'))];
+  targets.forEach(async (lang) => {
+    const pairs = await BuiltinTranslate.missingPairs(texts, lang);
+    startBuiltinDownload(pairs);
+  });
+}
+
+// 設定の検索。全タブの行から、名前・説明に当てはまるものだけを出す。
+// 当てはまる行が無いカード・見出し・タブは隠し、「詳細設定」の中で当たれば開く。
+// 項目が多く、どのタブにあるか分からないという声への答え(項目は減らさない)。
+const normalizeSearchText = (text) => String(text || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+function applySettingsSearch(query) {
+  if (!ui.settings) return;
+  const q = normalizeSearchText(query);
+  ui.settings.classList.toggle('settings-searching', !!q);
+  let anyHit = false;
+  ui.settings.querySelectorAll('.settings-panel').forEach((panel) => {
+    let panelHit = false;
+    panel.querySelectorAll('.settings-group-card').forEach((card) => {
+      let cardHit = false;
+      card.querySelectorAll(':scope > .setting-row').forEach((row) => {
+        const hit = !q || normalizeSearchText(row.textContent).includes(q);
+        row.classList.toggle('settings-search-miss', !hit);
+        if (hit) cardHit = true;
+      });
+      card.classList.toggle('settings-search-miss', !cardHit);
+      const details = card.closest('details');
+      if (details) {
+        details.classList.toggle('settings-search-miss', !cardHit);
+        if (q && cardHit) details.open = true;
+      }
+      if (cardHit) panelHit = true;
+    });
+    // 見出しは、すぐ後のカード(か詳細設定)が残っている時だけ出す
+    panel.querySelectorAll('.settings-section-title').forEach((title) => {
+      const next = title.nextElementSibling;
+      title.classList.toggle('settings-search-miss', !!q && (!next || next.classList.contains('settings-search-miss')));
+    });
+    panel.classList.toggle('settings-search-hit', !!q && panelHit);
+    if (q && panelHit) anyHit = true;
+  });
+  const empty = document.getElementById('settings-search-empty');
+  if (empty) empty.hidden = !q || anyHit;
+}
+
 function readSettingsDraft() {
   const draft = {};
   ui.settings.querySelectorAll('input[id]').forEach((input) => {
@@ -6415,6 +6932,9 @@ function renderSettingsPanel() {
     visuals: `<svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5 11 5.67 11 6.5 10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5S18.33 12 17.5 12z"/></svg>`,
     trans: `<svg viewBox="0 0 24 24"><path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/></svg>`,
     sources: `<svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>`,
+    bg: `<svg viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z"/></svg>`,
+    lyrics: `<svg viewBox="0 0 24 24"><path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z"/></svg>`,
+    video: `<svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V4h-4z"/></svg>`,
     data: `<svg viewBox="0 0 24 24"><path d="M12 2C7.58 2 4 3.79 4 6s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4zM4 8.55V12c0 2.21 3.58 4 8 4s8-1.79 8-4V8.55C18.83 9.99 15.72 11 12 11S5.17 9.99 4 8.55zM4 14.55V18c0 2.21 3.58 4 8 4s8-1.79 8-4v-3.45C18.83 15.99 15.72 17 12 17s-6.83-1.01-8-2.45z"/></svg>`,
     save: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H5V5h10v4z"/></svg>`,
     trash: `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`,
@@ -6431,8 +6951,18 @@ function renderSettingsPanel() {
           <span class="settings-app-name">YTM Immersion</span>
           <span class="settings-app-caption">${t('settings_title')}</span>
         </div>
+        <input type="search" id="settings-search" class="settings-search" placeholder="${t('settings_search_placeholder')}" aria-label="${t('settings_search_placeholder')}" autocomplete="off" spellcheck="false">
         <button class="settings-tab-btn" data-tab="visuals">
           ${ICONS.visuals}<span>${t('settings_tab_visuals')}</span>
+        </button>
+        <button class="settings-tab-btn" data-tab="bg">
+          ${ICONS.bg}<span>${t('settings_tab_bg')}</span>
+        </button>
+        <button class="settings-tab-btn" data-tab="lyrics">
+          ${ICONS.lyrics}<span>${t('settings_tab_lyrics')}</span>
+        </button>
+        <button class="settings-tab-btn" data-tab="video">
+          ${ICONS.video}<span>${t('settings_tab_video')}</span>
         </button>
         <button class="settings-tab-btn" data-tab="sources">
           ${ICONS.sources}<span>${t('settings_tab_sources')}</span>
@@ -6455,10 +6985,6 @@ function renderSettingsPanel() {
                ${ICONS.github}
              </a>
            </div>
-           <button id="save-settings-btn" class="settings-save-btn">
-             ${ICONS.save}
-             <span>${t('settings_save')}</span>
-           </button>
            ${extVersion ? `<div class="settings-version">v${extVersion}</div>` : ''}
         </div>
       </div>
@@ -6470,6 +6996,7 @@ function renderSettingsPanel() {
         </div>
 
         <div class="settings-scroll-area">
+          <div class="settings-search-empty" id="settings-search-empty" hidden>${t('settings_search_empty')}</div>
 
           <div class="settings-panel" id="panel-visuals">
             <div class="settings-section-title">${t('settings_sec_display')}</div>
@@ -6478,14 +7005,6 @@ function renderSettingsPanel() {
                 <span class="setting-name">${t('settings_ui_lang')}</span>
                 <div class="ytm-lang-group" id="ui-lang-group"></div>
               </div>
-              <label class="setting-row toggle-label">
-                <span class="setting-name">${t('settings_left_align')}</span>
-                <input type="checkbox" id="left-align-toggle">
-              </label>
-              <label class="setting-row toggle-label">
-                <span class="setting-name">${t('settings_prefer_song_mode')}</span>
-                <input type="checkbox" id="prefer-song-mode-toggle">
-              </label>
               <div class="setting-row stacked">
                 <div class="setting-row-top">
                   <span class="setting-name">${t('settings_ui_scale')}</span>
@@ -6493,27 +7012,42 @@ function renderSettingsPanel() {
                 </div>
                 <input type="range" id="ui-scale-slider" min="0.7" max="1.5" step="0.05" value="${config.uiScale || 1}">
               </div>
+              <label class="setting-row toggle-label">
+                <span class="setting-name">${t('settings_left_align')}</span>
+                <input type="checkbox" id="left-align-toggle">
+              </label>
+              <label class="setting-row toggle-label">
+                <span>
+                  <span class="setting-name">${t('settings_bar_autohide')}</span>
+                  <span class="setting-desc" id="bar-autohide-desc">${t('settings_bar_autohide_desc')}</span>
+                </span>
+                <input type="checkbox" id="bar-autohide-toggle" aria-describedby="bar-autohide-desc">
+              </label>
             </div>
+          </div>
 
+          <div class="settings-panel" id="panel-bg">
             <div class="settings-section-title">${t('settings_sec_bg')}</div>
             <div class="settings-group-card">
               <label class="setting-row toggle-label">
                 <span class="setting-name">${t('settings_apple_bg')}</span>
                 <input type="checkbox" id="apple-bg-toggle">
               </label>
+              <div class="setting-row stacked">
+                <div class="setting-row-top">
+                  <span class="setting-name">${t('settings_bg_brightness')}</span>
+                  <span class="setting-value-badge" id="bright-val">${Math.round(normalizeBgBrightness(config.bgBrightness) * 100)}%</span>
+                </div>
+                <input type="range" id="bright-slider" min="0" max="1.0" step="0.05" value="${normalizeBgBrightness(config.bgBrightness)}">
+              </div>
               <label class="setting-row toggle-label">
                 <span class="setting-name">${t('settings_low_cpu_mode')}</span>
                 <input type="checkbox" id="low-cpu-toggle">
               </label>
-              <div class="setting-row stacked">
-                <div class="setting-row-top">
-                  <span class="setting-name">${t('settings_bg_brightness')}</span>
-                  <span class="setting-value-badge" id="bright-val">${Math.round((config.bgBrightness || DEFAULT_BG_BRIGHTNESS) * 100)}%</span>
-                </div>
-                <input type="range" id="bright-slider" min="0.1" max="1.0" step="0.05" value="${config.bgBrightness || DEFAULT_BG_BRIGHTNESS}">
-              </div>
             </div>
+          </div>
 
+          <div class="settings-panel" id="panel-lyrics">
             <div class="settings-section-title">${t('settings_sec_lyrics')}</div>
             <div class="settings-group-card">
               <div class="setting-row stacked">
@@ -6555,6 +7089,60 @@ function renderSettingsPanel() {
               </label>
             </div>
 
+            <div class="settings-section-title">${t('settings_sec_timing')}</div>
+            <div class="settings-group-card">
+              <div class="setting-row">
+                 <span class="setting-name">${t('settings_sync_offset')}</span>
+                 <div class="setting-number-wrap">
+                   <input type="number" id="sync-offset-input" class="setting-input-number" placeholder="0">
+                   <span class="setting-unit">ms</span>
+                 </div>
+              </div>
+              <label class="setting-row toggle-label">
+                <span class="setting-name secondary">${t('settings_sync_offset_save')}</span>
+                <input type="checkbox" id="sync-offset-save-toggle">
+              </label>
+            </div>
+
+            <div class="settings-section-title">${t('settings_sec_reading')}</div>
+            <div class="settings-group-card">
+              <label class="setting-row toggle-label">
+                <span>
+                  <span class="setting-name">${t('settings_korean_ruby')}</span>
+                  <span class="setting-desc" id="korean-ruby-desc">${t('settings_korean_ruby_desc')}</span>
+                </span>
+                <input type="checkbox" id="korean-ruby-toggle" aria-describedby="korean-ruby-desc">
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-panel" id="panel-video">
+            <div class="settings-section-title">${t('settings_sec_movie')}</div>
+            <div class="settings-group-card">
+              <label class="setting-row toggle-label">
+                <span class="setting-name">${t('settings_prefer_song_mode')}</span>
+                <input type="checkbox" id="prefer-song-mode-toggle">
+              </label>
+              <label class="setting-row toggle-label">
+                <span class="setting-name">${t('settings_level_volume')}</span>
+                <input type="checkbox" id="level-volume-toggle">
+              </label>
+              <label class="setting-row toggle-label">
+                <span>
+                  <span class="setting-name">${t('settings_movie_lyrics')}</span>
+                  <span class="setting-desc" id="movie-lyrics-desc">${t('settings_movie_lyrics_desc')}</span>
+                </span>
+                <input type="checkbox" id="movie-lyrics-toggle" aria-describedby="movie-lyrics-desc">
+              </label>
+              <label class="setting-row toggle-label">
+                <span>
+                  <span class="setting-name">${t('settings_movie_skip_scenes')}</span>
+                  <span class="setting-desc" id="movie-skip-desc">${t('settings_movie_skip_scenes_desc')}</span>
+                </span>
+                <input type="checkbox" id="movie-skip-toggle" aria-describedby="movie-skip-desc">
+              </label>
+            </div>
+
             <div class="settings-section-title">${t('settings_sec_pip')}</div>
             <div class="settings-group-card">
               <label class="setting-row toggle-label">
@@ -6565,7 +7153,6 @@ function renderSettingsPanel() {
                 <input type="checkbox" id="pip-auto-open-toggle" aria-describedby="pip-auto-open-desc">
               </label>
             </div>
-
           </div>
 
           <div class="settings-panel" id="panel-sources">
@@ -6600,27 +7187,36 @@ function renderSettingsPanel() {
             <div class="settings-section-title">${t('settings_sec_translation')}</div>
             <div class="settings-group-card">
               <label class="setting-row toggle-label">
-                <span class="setting-name">${t('settings_trans')}</span>
-                <input type="checkbox" id="trans-toggle">
-              </label>
-              <label class="setting-row toggle-label">
-                <span class="setting-name">${t('settings_shared_trans')}</span>
-                <input type="checkbox" id="shared-trans-toggle">
-              </label>
-            </div>
-
-            <div class="settings-group-card">
-              <label class="setting-row toggle-label">
                 <span>
-                  <span class="setting-name">${t('settings_korean_ruby')}</span>
-                  <span class="setting-desc" id="korean-ruby-desc">${t('settings_korean_ruby_desc')}</span>
+                  <span class="setting-name">${t('settings_trans')}</span>
+                  <span class="setting-desc" id="trans-engine-desc"></span>
                 </span>
-                <input type="checkbox" id="korean-ruby-toggle" aria-describedby="korean-ruby-desc">
+                <input type="checkbox" id="trans-toggle" aria-describedby="trans-engine-desc">
               </label>
+              <div class="setting-row stacked">
+                <span class="setting-name">${t('settings_target_lang')}</span>
+                <div class="ytm-lang-group" id="sub-lang-group">
+                  <button class="ytm-lang-pill" data-value="auto">${t('settings_lang_auto')}</button>
+                  <button class="ytm-lang-pill" data-value="ja">日本語</button>
+                  <button class="ytm-lang-pill" data-value="en">English</button>
+                  <button class="ytm-lang-pill" data-value="ko">한국어</button>
+                  <button class="ytm-lang-pill" data-value="zh">中文</button>
+                  <button class="ytm-lang-pill" data-value="original">${t('settings_lang_original')}</button>
+                </div>
+              </div>
             </div>
 
-            <div class="settings-group-card">
-               <div class="setting-row stacked">
+            <details class="settings-advanced" id="trans-advanced">
+              <summary class="settings-advanced-summary">${t('settings_trans_advanced')}</summary>
+              <div class="settings-group-card">
+                <label class="setting-row toggle-label">
+                  <span>
+                    <span class="setting-name">${t('settings_shared_trans')}</span>
+                    <span class="setting-desc" id="shared-trans-desc">${t('settings_shared_trans_desc')}</span>
+                  </span>
+                  <input type="checkbox" id="shared-trans-toggle" aria-describedby="shared-trans-desc">
+                </label>
+                <div class="setting-row stacked">
                   <span class="setting-name">${t('settings_main_lang')}</span>
                   <div class="ytm-lang-group" id="main-lang-group">
                     <button class="ytm-lang-pill" data-value="original">${t('settings_lang_original')}</button>
@@ -6628,36 +7224,15 @@ function renderSettingsPanel() {
                     <button class="ytm-lang-pill" data-value="en">English</button>
                     <button class="ytm-lang-pill" data-value="ko">한국어</button>
                   </div>
-               </div>
-               <div class="setting-row stacked">
-                  <span class="setting-name">${t('settings_sub_lang')}</span>
-                  <div class="ytm-lang-group" id="sub-lang-group">
-                    <button class="ytm-lang-pill" data-value="original">${t('settings_lang_original')}</button>
-                    <button class="ytm-lang-pill" data-value="ja">日本語</button>
-                    <button class="ytm-lang-pill" data-value="en">English</button>
-                    <button class="ytm-lang-pill" data-value="ko">한국어</button>
-                    <button class="ytm-lang-pill" data-value="zh">中文</button>
-                  </div>
-               </div>
-               <div class="setting-row stacked">
-                 <span class="setting-name">DeepL API Key <span class="setting-tag">${t('settings_optional')}</span></span>
-                 <input type="password" id="deepl-key-input" class="setting-input-text" placeholder="${t('settings_deepl_placeholder')}" autocomplete="off">
-               </div>
-            </div>
+                </div>
+                <div class="setting-row stacked">
+                  <span class="setting-name">DeepL API Key <span class="setting-tag">${t('settings_optional')}</span></span>
+                  <span class="setting-desc">${t('settings_deepl_desc')}</span>
+                  <input type="password" id="deepl-key-input" class="setting-input-text" placeholder="${t('settings_deepl_placeholder')}" autocomplete="off">
+                </div>
+              </div>
+            </details>
 
-            <div class="settings-group-card">
-               <div class="setting-row">
-                  <span class="setting-name">${t('settings_sync_offset')}</span>
-                  <div class="setting-number-wrap">
-                    <input type="number" id="sync-offset-input" class="setting-input-number" placeholder="0">
-                    <span class="setting-unit">ms</span>
-                  </div>
-               </div>
-               <label class="setting-row toggle-label">
-                 <span class="setting-name secondary">${t('settings_sync_offset_save')}</span>
-                 <input type="checkbox" id="sync-offset-save-toggle">
-               </label>
-            </div>
           </div>
 
           <div class="settings-panel" id="panel-data">
@@ -6699,6 +7274,23 @@ function renderSettingsPanel() {
         </div>
       </div>
     `;
+  // 設定を変えたら自動保存(ui.settings は描き直しても同じ要素なので、つなぐのは 1 回)。
+  // トグル・スライダー・入力欄は change、言語やソースのピルはクリックで知る。
+  if (!ui.settings._autosaveBound) {
+    ui.settings._autosaveBound = true;
+    ui.settings.addEventListener('change', (e) => {
+      const el = e.target;
+      if (el && el.matches && el.matches('.settings-panel input') && el.id !== 'settings-search') scheduleSettingsAutosave();
+    });
+    ui.settings.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('.settings-panel .ytm-lang-pill:not(#extra-providers-btn)')) scheduleSettingsAutosave();
+    }, true);
+    // 表示言語の「etc...」のメニューは body の直下に出る
+    document.addEventListener('click', (e) => {
+      if (e.target && e.target.closest && e.target.closest('.ytm-lang-etc-item') && ui.settings.classList.contains('active')) scheduleSettingsAutosave();
+    }, true);
+  }
+
   // --- Tab Switching Logic ---
   const tabs = ui.settings.querySelectorAll('.settings-tab-btn');
   const panels = ui.settings.querySelectorAll('.settings-panel');
@@ -6712,8 +7304,24 @@ function renderSettingsPanel() {
   };
   showTab(settingsActiveTab);
   tabs.forEach(tab => {
-    tab.addEventListener('click', () => showTab(tab.getAttribute('data-tab')));
+    tab.addEventListener('click', () => {
+      // 検索中にタブを押したら、検索をやめてそのタブを開く
+      const search = document.getElementById('settings-search');
+      if (search && search.value) { search.value = ''; applySettingsSearch(''); }
+      showTab(tab.getAttribute('data-tab'));
+    });
   });
+  // 検索中に、どのタブの項目かが分かるようにタブ名を控えておく
+  panels.forEach(panel => {
+    const tab = ui.settings.querySelector(`.settings-tab-btn[data-tab="${panel.id.replace(/^panel-/, '')}"]`);
+    if (tab) panel.dataset.searchTitle = tab.textContent.trim();
+  });
+  const searchInput = document.getElementById('settings-search');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => applySettingsSearch(searchInput.value));
+    // 描き直し(表示言語の切り替え)で残った検索語をそのまま効かせる
+    if (searchInput.value) applySettingsSearch(searchInput.value);
+  }
 
 
   // 値の反映
@@ -6721,9 +7329,14 @@ function renderSettingsPanel() {
   document.getElementById('trans-toggle').checked = config.useTrans;
   document.getElementById('shared-trans-toggle').checked = !!config.useSharedTranslateApi;
   document.getElementById('left-align-toggle').checked = !!config.leftAlignInfo;
+  const barAutoHideToggle = document.getElementById('bar-autohide-toggle');
+  if (barAutoHideToggle) barAutoHideToggle.checked = typeof BarAutoHide !== 'undefined' && BarAutoHide.isEnabled();
   document.getElementById('lyric-stagger-toggle').checked = config.lyricStagger !== false;
   document.getElementById('fade-past-lyrics-toggle').checked = !!config.fadePastLyrics;
   document.getElementById('prefer-song-mode-toggle').checked = !!config.preferSongMode;
+  document.getElementById('level-volume-toggle').checked = config.levelVolume !== false;
+  document.getElementById('movie-lyrics-toggle').checked = config.movieLyrics !== false;
+  document.getElementById('movie-skip-toggle').checked = !!config.movieSkipScenes;
   document.getElementById('apple-bg-toggle').checked = !!config.appleBg;
   document.getElementById('low-cpu-toggle').checked = !!config.lowCpuMode;
   document.getElementById('apple-sync-toggle').checked = !!config.appleSyncStyle;
@@ -6777,13 +7390,26 @@ function renderSettingsPanel() {
       document.getElementById('bright-val').textContent = Math.round(val * 100) + '%';
       document.documentElement.style.setProperty('--ytm-bg-brightness', val);
       PipManager.syncBackgroundBrightness();
+      if (typeof FluidBg !== 'undefined') FluidBg.redraw();
       updateSliderFill(e.target);
     });
   }
 
   // 言語ピル設定
   setupLangPills('main-lang-group', config.mainLang, v => { config.mainLang = v; });
-  setupLangPills('sub-lang-group', config.subLang, v => { config.subLang = v; });
+  // 翻訳を入れたクリックで、今の曲に要る言語データを落とし始める
+  // (落とし始めはクリックの中でしかできない)。訳す先を変えた時も同じ。
+  const transToggle = document.getElementById('trans-toggle');
+  setupLangPills('sub-lang-group', config.subLang, v => {
+    config.subLang = v;
+    if (transToggle.checked) prepareBuiltinTranslation();
+  });
+  transToggle.addEventListener('change', () => {
+    if (transToggle.checked) prepareBuiltinTranslation();
+    updateTransEngineDesc();
+  });
+  document.getElementById('deepl-key-input')?.addEventListener('input', updateTransEngineDesc);
+  updateTransEngineDesc();
   setupLangPills('lyric-source-group', config.lyricSourceMode || 'ytm', v => { config.lyricSourceMode = v; });
   refreshUiLangGroup();
 
@@ -6816,7 +7442,10 @@ function renderSettingsPanel() {
   }
 
   // 保存ボタンの処理
-  document.getElementById('save-settings-btn').onclick = async () => {
+  // 設定を読み取って保存し、画面に反映する。設定を変えるたびに、閉じずに呼ぶ
+  // (scheduleSettingsAutosave)。以前は「保存」を押さないと確定せず、押し忘れて
+  // 閉じると変更が消えていた(どう保存するのか分かりにくいという声があった)。
+  const commitSettings = async ({ close = false } = {}) => {
     const session = settingsSession;
     const prevAlwaysShowMeaning = !!config.alwaysShowMeaning;
     const [
@@ -6849,10 +7478,10 @@ function renderSettingsPanel() {
 
     const prevDeepLKey = savedDeepLKey || '';
     const prevMainLang = savedMainLang || 'original';
-    const prevSubLang = savedSubLang !== null ? savedSubLang : 'en';
+    const prevSubLang = savedSubLang !== null ? savedSubLang : 'auto';
     const prevUseTrans = savedUseTrans !== null ? savedUseTrans : false;
-    const prevUseSharedTrans = savedSharedTrans !== null ? savedSharedTrans : false;
-    const prevUiLang = savedUiLang || 'ja';
+    const prevUseSharedTrans = savedSharedTrans !== null ? savedSharedTrans : true;
+    const prevUiLang = savedUiLang || DEFAULT_UI_LANG;
     const prevAnimatedCaptions = savedAnimatedCaptions !== null ? !!savedAnimatedCaptions : false;
     const prevUseLrcLibFallback = savedLrcLibFallback !== null ? !!savedLrcLibFallback : true;
     const prevSourceMode = normalizeSourceMode(savedSourceMode);
@@ -6871,10 +7500,17 @@ function renderSettingsPanel() {
     config.useTrans = document.getElementById('trans-toggle').checked;
     config.useSharedTranslateApi = document.getElementById('shared-trans-toggle').checked;
     config.leftAlignInfo = document.getElementById('left-align-toggle').checked;
+    const nextBarAutoHide = !!document.getElementById('bar-autohide-toggle')?.checked;
+    if (typeof BarAutoHide !== 'undefined' && BarAutoHide.isEnabled() !== nextBarAutoHide) BarAutoHide.setEnabled(nextBarAutoHide);
     config.lyricStagger = document.getElementById('lyric-stagger-toggle').checked;
     config.fadePastLyrics = document.getElementById('fade-past-lyrics-toggle').checked;
     config.keepPastLyrics = !config.fadePastLyrics;
     config.preferSongMode = document.getElementById('prefer-song-mode-toggle').checked;
+    config.levelVolume = document.getElementById('level-volume-toggle').checked;
+    VolumeLeveler.setEnabled(config.levelVolume);
+    config.movieLyrics = document.getElementById('movie-lyrics-toggle').checked;
+    config.movieSkipScenes = document.getElementById('movie-skip-toggle').checked;
+    document.body.classList.toggle('ytm-movie-lyrics', !!config.movieLyrics);
     config.appleBg = document.getElementById('apple-bg-toggle').checked;
     config.lowCpuMode = document.getElementById('low-cpu-toggle').checked;
     config.appleSyncStyle = document.getElementById('apple-sync-toggle').checked;
@@ -6904,6 +7540,10 @@ function renderSettingsPanel() {
       storage.set('ytm_lyric_stagger', config.lyricStagger),
       storage.set('ytm_fade_past_lyrics', config.fadePastLyrics),
       storage.set('ytm_prefer_song_mode', config.preferSongMode),
+      storage.set('ytm_level_volume', config.levelVolume !== false),
+      storage.set('ytm_movie_lyrics', !!config.movieLyrics),
+      storage.set('ytm_movie_skip_scenes', !!config.movieSkipScenes),
+      storage.set('ytm_bar_autohide', nextBarAutoHide),
       storage.set('ytm_apple_bg', config.appleBg),
       storage.set('ytm_low_cpu_mode', config.lowCpuMode),
       storage.set('ytm_apple_sync_style', config.appleSyncStyle),
@@ -6928,6 +7568,7 @@ function renderSettingsPanel() {
     document.body.classList.toggle('ytm-apple-bg', !!config.appleBg);
     document.body.classList.toggle('ytm-lightweight-mode', !!config.lowCpuMode);
     document.body.classList.toggle('ytm-singer-colors-enabled', !!config.useSingerColors);
+    syncFluidBg();
     applyAppleSyncClass();
     applyLyricEffectsSettings();
     if (PipManager.pipWindow?.document) {
@@ -6940,7 +7581,11 @@ function renderSettingsPanel() {
     PipManager.setAutoOpen(!!config.pipAutoOpen);
     applyUiScale(config.uiScale);
 
+    // 訳す先が「自動」なら、表示言語を変えると訳す言語も変わる
+    const autoTargetChanged = prevUiLang !== config.uiLang &&
+      [config.mainLang, config.subLang].includes('auto');
     const translationChanged = (
+      autoTargetChanged ||
       prevDeepLKey !== config.deepLKey ||
       prevMainLang !== config.mainLang ||
       prevSubLang !== config.subLang ||
@@ -6962,7 +7607,14 @@ function renderSettingsPanel() {
     // 読みは表示言語でカナとローマ字が変わるので、言語を変えた時も描き直す
     const koreanRubyChanged = prevKoreanRuby !== nextKoreanRuby || (nextKoreanRuby && uiLanguageChanged);
 
-    closeSettings({ saved: true });
+    if (close) {
+      closeSettings({ saved: true });
+    } else if (settingsSession) {
+      // 開いたまま保存した。閉じた時に戻す基準を、いま保存した値にそろえる
+      settingsSession.snapshot = Object.fromEntries(SETTINGS_LIVE_KEYS.map(key => [key, config[key]]));
+      settingsSession.disabledSources = disabledSourcesKey(config.disabledLyricSources);
+      settingsSession.sourcesChanged = false;
+    }
 
     if (animatedCaptionsChanged || lyricsSourceChanged || wordSyncChanged) {
       const metaNow = getMetadata();
@@ -7014,9 +7666,8 @@ function renderSettingsPanel() {
       }
       renderSettingsPanel();
     }
-
-    showToast(t('settings_saved'));
   };
+  ui.settings._commitSettings = commitSettings;
 
   // リセットボタン
   //
@@ -7417,6 +8068,14 @@ function initLayout() {
     click: (ev) => setupSwitchPanel(ev.currentTarget)
   };
 
+  // 動画の画質(動画モードの時だけ出る。本体は video-quality.js)
+  const qualityBtnConfig = {
+    txt: '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="2" y="5" width="20" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.9"/><text x="12" y="15.3" text-anchor="middle" font-size="8.4" font-weight="800" fill="currentColor" font-family="system-ui, -apple-system, sans-serif">HD</text></svg>',
+    cls: 'icon-btn ytm-quality-btn',
+    label: 'btn_video_quality',
+    click: () => { }
+  };
+
   // 歌詞カード(選んだ行を画像にする。本体は lyric-card.js)
   const lyricCardBtnConfig = {
     txt: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7.5 10.5h2.8v2.3c0 1.2-.7 2.1-1.9 2.4M13.7 10.5h2.8v2.3c0 1.2-.7 2.1-1.9 2.4"/></svg>',
@@ -7433,7 +8092,7 @@ function initLayout() {
   // 上端は YTM の検索バー(ホバーで出る)、右端は Up Next を開く帯、
   // 狭い画面と動画モードの隅は曲/動画の切り替えが使っていて、
   // どこに置いてもホバーやクリックを取り合った。
-  btns.push(lyricsBtnConfig, pipBtnConfig, lyricCardBtnConfig, switchBtnConfig, replayBtnConfig, settingsBtnConfig);
+  btns.push(lyricsBtnConfig, pipBtnConfig, qualityBtnConfig, lyricCardBtnConfig, switchBtnConfig, replayBtnConfig, settingsBtnConfig);
   ui.appBtnArea = createEl('div', 'ytm-app-btn-area');
   ui.appBtnArea.setAttribute('role', 'group');
 
@@ -7447,6 +8106,7 @@ function initLayout() {
       ui.lyricsBtn = btn;
       setupUploadMenu(btn);
     }
+    if (b === qualityBtnConfig) setupQualityMenu(btn);
     if (b === switchBtnConfig) {
       btn.id = 'ytm-switch-btn';
       // Use the custom icon image
@@ -8720,12 +9380,79 @@ const handleUpload = (e) => {
 
 
 let isRafLoopRunning = false;
+// 時刻付きの歌詞が無い時は毎フレーム回さず、この間隔で回す(広告・一時停止の印だけ見る)
+const LYRIC_IDLE_TICK_MS = 250;
+let lyricIdleTimer = null;
+
+// ループを回す意味があるのは、歌詞が見えている時(Immersion を開いている・PiP)だけ。
+// 閉じている間も毎フレーム rAF を頼んでいたので、歌詞の無い曲でもページ全体の
+// フレームの組み立てと描画が 1 秒 60 回走り、拡張を入れただけで YTM の CPU が
+// 拡張なしの 2.5 倍になっていた(実測、2026-10)。開いた時・PiP を開いた時・
+// 再生が始まった時に startLyricRafLoop で再開する。
+const lyricLoopVisible = () => !!PipManager.pipWindow ||
+  !!document.body?.classList.contains('ytm-custom-layout');
+// 毎フレーム見る必要があるのは、時刻で行や文字を塗る時だけ
+const lyricLoopNeedsEveryFrame = () => (
+  (!!animatedCaptionData && !!config.useAnimatedCaptions) ||
+  (!animatedCaptionData && lyricsData.length > 0 && !!hasTimestamp)
+);
+
+// 行ごとの同期(LRC)の歌詞は、行が変わる時にしか画面が変わらない。それでも
+// 毎フレーム rAF を頼んでいたので、ページ全体のフレームの組み立て(スタイルの
+// 再計算・IntersectionObserver の判定)が 1 秒 60 回走り、描くものが無いのに
+// メインスレッドが拡張なしの 2 倍になっていた(実測、2026-10: 曲モードで
+// 9.2 秒/分、拡張なし 4.4 秒/分。描いたのは 5 回に 1 回)。
+// 塗る文字(語・1 文字同期)が無い間は、次に何かが変わる時刻の少し前まで寝る。
+// シークや一時停止に気付くのが遅れないよう、寝るのは最長でも LYRIC_IDLE_TICK_MS。
+const LYRIC_WAKE_EARLY_MS = 80;
+const LYRIC_FRAME_MS = 1000 / 60;
+const LYRIC_MOVIE_FRAME_MS = 1000 / 30;
+// タイマーは少し遅れて来ることがある。その分早めに起きて、rAF で画面に合わせる
+const LYRIC_FRAME_SLACK_MS = 4;
+let _lyricLoopRanAt = 0;
+const nextLyricEventSec = (t) => {
+  let next = Infinity;
+  const consider = (x) => { if (Number.isFinite(x) && x > t && x < next) next = x; };
+  for (const line of lyricsData) {
+    consider(line?.time);
+    consider(line?._dynamicRenderStartSec);
+    consider(line?._dynamicRenderEndSec);
+  }
+  if (config.fadePastLyrics) for (const item of _lyricCompletionSchedule) consider(item?.end);
+  return next;
+};
+const lyricLoopSleepMs = () => {
+  if (_activeRowsHaveCharSpans || (animatedCaptionData && config.useAnimatedCaptions)) return 0;
+  if (!(_lastRafPlaybackTime >= 0)) return 0;
+  const next = nextLyricEventSec(_lastRafPlaybackTime);
+  const rate = _playbackRateForMotion > 0 ? _playbackRateForMotion : 1;
+  const ms = Number.isFinite(next) ? ((next - _lastRafPlaybackTime) * 1000) / rate : Infinity;
+  return ms - LYRIC_WAKE_EARLY_MS > 16 ? Math.min(ms - LYRIC_WAKE_EARLY_MS, LYRIC_IDLE_TICK_MS) : 0;
+};
+
 // rAF の ID はそれを発行したウィンドウでしか解除できない。
 // PIP ウィンドウで予約した ID をメインの cancelAnimationFrame に渡しても効かないので、
 // どちらで発行したかを覚えておく。
 let lyricRafWindow = null;
 
+// 寝る時のタイマーも、PiP を開いている間は PiP の窓で頼む。タブが裏に
+// 回ると本体の窓のタイマーは 1 秒以上に間引かれ、PiP の行が遅れて変わる。
+let lyricIdleTimerWindow = null;
+let lyricVfcId = null;
+let lyricVfcVideo = null;
+const cancelLyricVfc = () => {
+  if (lyricVfcId === null) return;
+  try { lyricVfcVideo?.cancelVideoFrameCallback(lyricVfcId); } catch (e) { }
+  lyricVfcId = null;
+  lyricVfcVideo = null;
+};
 const cancelLyricRaf = () => {
+  cancelLyricVfc();
+  if (lyricIdleTimer) {
+    try { (lyricIdleTimerWindow || window).clearTimeout(lyricIdleTimer); } catch (e) { }
+    lyricIdleTimer = null;
+    lyricIdleTimerWindow = null;
+  }
   if (!lyricRafId) return;
   try { (lyricRafWindow || window).cancelAnimationFrame(lyricRafId); } catch (e) { }
   lyricRafId = null;
@@ -9151,6 +9878,71 @@ function startLyricRafLoop() {
   resetPlaybackClock();
 
   const scheduleNextFrame = () => {
+    if (!lyricLoopVisible()) {
+      isRafLoopRunning = false;
+      return;
+    }
+    const sleepMs = lyricLoopNeedsEveryFrame() ? lyricLoopSleepMs() : LYRIC_IDLE_TICK_MS;
+    if (sleepMs > 0) {
+      lyricIdleTimerWindow = PipManager.pipWindow || window;
+      lyricIdleTimer = lyricIdleTimerWindow.setTimeout(() => {
+        lyricIdleTimer = null;
+        lyricIdleTimerWindow = null;
+        loop();
+      }, sleepMs);
+      return;
+    }
+    // 塗る文字がある間も、回数に上限を付ける。曲モードは 1 秒 60 回、
+    // 動画モードは 30 回(映像そのものが 30 コマ前後なので、それより細かく
+    // 塗っても見た目は変わらない)。120Hz の画面では rAF が 1 秒 120 回来る。
+    // 次の 1 枚の少し前まではタイマーで待つ(rAF を頼むとその時点で
+    // ページ全体のフレームが立つ)。
+    // 動画モードは映像のコマに合わせて塗る(requestVideoFrameCallback)。別々の
+    // 時計で塗ると、映像のコマと歌詞の塗りで合成の回数が足し算になる。
+    // 映像のコマに乗せれば、映像が描くついでに歌詞も描ける。
+    // PiP を開いている・タブが裏の時は、映像のコマが本体の画面に出ないので使わない。
+    // 一時停止・読み込み待ちでコマが来ない時に止まらないよう、タイマーでも起こす。
+    if (moviemode === true && !PipManager.pipWindow && !document.hidden) {
+      const video = _cachedVideoEl || document.querySelector('video');
+      if (video && typeof video.requestVideoFrameCallback === 'function') {
+        const onFrame = () => {
+          lyricVfcId = null;
+          lyricVfcVideo = null;
+          if (performance.now() - _lyricLoopRanAt < LYRIC_MOVIE_FRAME_MS - LYRIC_FRAME_SLACK_MS) {
+            // 60 コマの映像。1 つおきに塗る
+            lyricVfcVideo = video;
+            lyricVfcId = video.requestVideoFrameCallback(onFrame);
+            return;
+          }
+          if (lyricIdleTimer) { clearTimeout(lyricIdleTimer); lyricIdleTimer = null; lyricIdleTimerWindow = null; }
+          loop();
+        };
+        lyricVfcVideo = video;
+        lyricVfcId = video.requestVideoFrameCallback(onFrame);
+        lyricIdleTimerWindow = window;
+        lyricIdleTimer = setTimeout(() => {
+          lyricIdleTimer = null;
+          lyricIdleTimerWindow = null;
+          cancelLyricVfc();
+          loop();
+        }, LYRIC_IDLE_TICK_MS);
+        return;
+      }
+    }
+    const frameMs = moviemode === true ? LYRIC_MOVIE_FRAME_MS : LYRIC_FRAME_MS;
+    const wait = frameMs - (performance.now() - _lyricLoopRanAt) - LYRIC_FRAME_SLACK_MS;
+    if (wait > 1) {
+      lyricIdleTimerWindow = PipManager.pipWindow || window;
+      lyricIdleTimer = lyricIdleTimerWindow.setTimeout(() => {
+        lyricIdleTimer = null;
+        lyricIdleTimerWindow = null;
+        requestLoopFrame();
+      }, wait);
+      return;
+    }
+    requestLoopFrame();
+  };
+  const requestLoopFrame = () => {
     if (PipManager.pipWindow) {
       lyricRafWindow = PipManager.pipWindow;
       lyricRafId = PipManager.pipWindow.requestAnimationFrame(loop);
@@ -9161,6 +9953,7 @@ function startLyricRafLoop() {
   };
 
   const loop = () => {
+    _lyricLoopRanAt = performance.now();
     const v = _cachedVideoEl || (_cachedVideoEl = document.querySelector('video'));
 
     if (v) {
@@ -9196,6 +9989,8 @@ function startLyricRafLoop() {
         // currentTime が offset を下回ったら曲がリセットされたとみなし offset を解除。
         if (timeOffset > 0 && t < timeOffset) timeOffset = 0;
         t = toLocalPlaybackTime(t);
+        // 動画モードで対応表がある時は、MV の時刻を音源の時刻に直す
+        t = applyMovieTime(t, v);
         // v.duration は曲ごとの長さ。ローカル時間はそれを超えないのでそのままクランプ
         t = Math.min(Math.max(0, t + (config.syncOffset / 1000)), v.duration);
 
@@ -9902,8 +10697,20 @@ const isHitTestable = (el) => {
     && hit !== document.documentElement && hit !== document.body && hit.contains(el);
 };
 // 動画モードでは、YTM が操作の無い間バーをわざと隠して押せなくする。
+// 設定「操作バーを自動で隠す」(bar-autohide.js)でも、マウスが下に無い間は隠す。
 // その間に当たり判定をすると、ボタンが浮いて出ては戻るを繰り返すので測らない。
-const barMayBeAutoHidden = () => !!moviemode;
+const barMayBeAutoHidden = () => !!moviemode || document.body.classList.contains('ytm-bar-autohide');
+// 今まさにバーを隠している(動画モード、または自動で隠していてマウスが下に無い)。
+// 自前のバーに切り替えるかの判断はこの間はしない。隠れたバーは押せないので、
+// 当たり判定が続けて外れ、自前のバーが出ていた(動画から戻った後など、実機)
+const barHiddenOnPurpose = () => !!moviemode
+  || (document.body.classList.contains('ytm-bar-autohide') && !document.body.classList.contains('ytm-bar-peek'));
+// 置き場所として使えるか。わざと隠れている間は visibility が hidden なので、
+// 並んでいる(大きさがある)ことだけを見る。見えるかで見ていたので、隠れている
+// 間に置き直すと、置き場所が無いことになって IMMERSION ボタンだけが浮いていた
+const isUsableToggleSpot = (el) => (barMayBeAutoHidden()
+  ? !!el && el.isConnected && el.getClientRects().length > 0
+  : isShownOnScreen(el));
 
 // 置く所を決める。見える候補が無い時は:
 //  ・プレイヤーバーごと隠れている(まだ何も再生していない等) → 在る候補へ
@@ -9920,13 +10727,13 @@ const pickModeToggleHost = () => {
     const el = PlayerBar.query(selector);
     if (!el) continue;
     const primary = i < MODE_TOGGLE_PRIMARY_HOSTS;
-    if (isShownOnScreen(el) && (barMayBeAutoHidden() || isHitTestable(el))) return { el, how, primary };
+    if (isUsableToggleSpot(el) && (barMayBeAutoHidden() || isHitTestable(el))) return { el, how, primary };
     if (!firstExisting) firstExisting = { el, how, primary };
   }
   // まだ何も再生していなければ、バーが隠れているのは普通なので浮かせない。
   // 再生中なのにバーが見えない(狭い窓のプレイヤーページ等)なら浮かせる
   const bar = PlayerBar.get();
-  if (!isPlayingSomething() && (!bar || !isShownOnScreen(bar))) return firstExisting;
+  if (!isPlayingSomething() && (!bar || !isUsableToggleSpot(bar))) return firstExisting;
   return { el: document.body, how: 'float', primary: false };
 };
 const isPlayingSomething = () => {
@@ -9964,19 +10771,70 @@ const setNavPeek = (on) => {
   _navPeek = on;
   document.body.classList.toggle(NAV_PEEK_CLASS, on);
 };
+// 上の帯には Immersion のボタン(曲/動画の切り替え・動画モードのボタン列・
+// 狭い窓の見出し)もある。そこへ向かう途中で帯を通っただけでナビバーが出て、
+// ボタンの上に被さって押せなかった(実機: 縦長の窓で「動画」が押せない)。
+//  ・帯に少し留まった時だけ出す(通り過ぎただけでは出さない)
+//  ・出ている間も、ナビバーの下に Immersion のボタンがある所へ来たら引っ込める
+const NAV_PEEK_DWELL_MS = 250;
+let _navPeekTimer = null;
+let _navPeekX = 0;
+let _navPeekY = 0;
+const clearNavPeekTimer = () => {
+  if (_navPeekTimer) clearTimeout(_navPeekTimer);
+  _navPeekTimer = null;
+};
+const immersionControlAt = (x, y) => document.elementsFromPoint(x, y)
+  .some(el => !el.closest('ytmusic-nav-bar') && el.closest(NAV_PEEK_SKIP_SELECTOR));
+// ナビバーは乗っている間(:hover)も出たままになる。狭い窓ではナビバーの
+// 真下に曲/動画の切り替えがあり、引っ込めても乗ったままなので消えず、押すと
+// ナビバーの「ログイン」に当たっていた(実機)。Immersion のボタンの上に来たら、
+// ナビバーを透明・素通しにする(ytmi-nav-yield、style.css)。
+const NAV_YIELD_CLASS = 'ytmi-nav-yield';
+let _navYield = false;
+const setNavYield = (on) => {
+  if (_navYield === on) return;
+  _navYield = on;
+  document.body.classList.toggle(NAV_YIELD_CLASS, on);
+};
 const onNavPeekMove = (e) => {
+  _navPeekX = e.clientX;
+  _navPeekY = e.clientY;
   if (!document.body.classList.contains('ytm-custom-layout') || e.clientY > NAV_PEEK_RELEASE_PX) {
+    clearNavPeekTimer();
     setNavPeek(false);
+    setNavYield(false);
     return;
   }
-  if (_navPeek || e.clientY > NAV_PEEK_ZONE_PX) return;
+  const overControl = immersionControlAt(e.clientX, e.clientY);
+  setNavYield(overControl);
+  if (_navPeek) {
+    if (overControl) setNavPeek(false);
+    return;
+  }
+  if (e.clientY > NAV_PEEK_ZONE_PX) {
+    clearNavPeekTimer();
+    return;
+  }
   const target = e.target;
-  if (target instanceof Element && !target.closest('ytmusic-nav-bar') && target.closest(NAV_PEEK_SKIP_SELECTOR)) return;
-  setNavPeek(true);
+  if (target instanceof Element && !target.closest('ytmusic-nav-bar') && target.closest(NAV_PEEK_SKIP_SELECTOR)) {
+    clearNavPeekTimer();
+    return;
+  }
+  if (_navPeekTimer) return;
+  _navPeekTimer = setTimeout(() => {
+    _navPeekTimer = null;
+    if (_navPeekY > NAV_PEEK_ZONE_PX || immersionControlAt(_navPeekX, _navPeekY)) return;
+    setNavPeek(true);
+  }, NAV_PEEK_DWELL_MS);
 };
 document.addEventListener('mousemove', onNavPeekMove, { passive: true });
 // 窓の外へ出た(上のタブ等へ)ら引っ込める
-document.documentElement.addEventListener('mouseleave', () => setNavPeek(false));
+document.documentElement.addEventListener('mouseleave', () => {
+  clearNavPeekTimer();
+  setNavPeek(false);
+  setNavYield(false);
+});
 
 // ── Immersion を出すかどうか ──────────────────────────────
 // config.mode は「プレイヤーページを Immersion で置き換える」の入切。
@@ -10020,6 +10878,11 @@ const applyImmersionShown = (shown) => {
   document.body.classList.toggle('ytm-custom-layout', shown);
   PlayerBar.check({ shown, skip: true });
   syncBarPlayerButton();
+  // 操作バーを自動で隠す設定の時、開いた瞬間はバーの場所が分かるように少し出す
+  if (typeof BarAutoHide !== 'undefined') BarAutoHide.syncImmersionShown(shown);
+  // 閉じている間は歌詞のループを止めている(lyricLoopVisible)ので、開いたら回し直す
+  if (shown) startLyricRafLoop();
+  syncFluidBg();
   // 新バーの幅合わせ(右の列が収まる幅・時刻を隠すか)は、開いた時点で済ませる。
   // 見張り(0.6 秒後)まで待つと、閉じた時に外した幅のまま一度出てから
   // 広がり直し、閉じる/戻る・IMMERSION の二度押しで戻るたびにバーが組み替わって見えた
@@ -10154,8 +11017,8 @@ const scheduleImmersionBarCheck = () => {
 const runImmersionBarCheck = () => {
   if (document.hidden) return;
   const shown = document.body.classList.contains('ytm-custom-layout');
-  // 動画モードでは YTM が操作の無い間バーを隠す(わざと)。その間は判断しない
-  const changed = PlayerBar.check({ shown, skip: !!moviemode });
+  // 動画モード・自動で隠す設定では、バーをわざと隠している。その間は判断しない
+  const changed = PlayerBar.check({ shown, skip: barHiddenOnPurpose() });
   if (changed) ensureModeToggle(true);
   if (PlayerBar.isFallbackOn()) PlayerBar.syncMinimize();
   balanceWizBar();
@@ -10198,7 +11061,7 @@ const ensureModeToggle = (recheck) => {
   // 浮いている・外れている・置き場所ごと隠れた時は、選んだ所へ置き直す。
   const parent = btn.parentElement;
   const settled = btn.isConnected && !btn.classList.contains(MODE_TOGGLE_FLOATING_CLASS)
-    && isShownOnScreen(parent);
+    && isUsableToggleSpot(parent);
   if (!settled || (host.how !== 'float' && host.el !== parent)) placeModeToggle(btn, host);
   syncBarMinimize(btn);
   return btn;
@@ -10389,6 +11252,7 @@ const tick = async () => {
   if (adPlaying) return;
 
   ensureModeToggle(false);
+  markMoviePlayerPath();
 
   const wasShown = document.body.classList.contains('ytm-custom-layout');
   const immersionShown = shouldShowImmersion();
@@ -10551,7 +11415,9 @@ const tick = async () => {
 
     // PIPウィンドウのメタデータと歌詞表示をリセット
     if (PipManager) {
-      PipManager.updateMeta(meta.title, meta.artist);
+      // アーティスト名は Immersion と同じ表記にする(updateMetaUI が直前に置いた名前)
+      PipManager.updateMeta(meta.title, (ui.artist && ui.artist.textContent) || meta.artist);
+      PipManager.syncVideoMode();
       PipManager.resetLyrics(); // ここで歌詞を一旦消す
       // Schedule a delayed update check to ensure player bar DOM is fully updated by YTM
       setTimeout(() => {
@@ -10586,6 +11452,13 @@ const tick = async () => {
       // ここは連打で途中の曲をいちいち取りに行かないための間だけでよい。
       // 先読み済みの曲でも毎回 1.5 秒ほど歌詞が空になっていた(実機)。
     }, LYRICS_LOAD_DEBOUNCE_MS);
+  } else {
+    if (meta.src && meta.src !== _artworkSrcShown) {
+      // 同じ曲のままジャケットだけ変わった(動画→曲で MV のサムネイルが残っていた)
+      updateArtworkUI(meta);
+    }
+    // 縦長の窓で名前だけになっていたアーティスト名を、リンクに戻す
+    if (_artistLinkPendingKey === currentKey && barHasArtistLinks()) updateArtistLink(meta);
   }
 };
 
@@ -10631,12 +11504,20 @@ const artworkDimFor = (luminance) => {
 const applyArtworkDim = (luminance) => {
   document.documentElement.style.setProperty('--ytm-bg-art-dim', artworkDimFor(luminance).toFixed(3));
   PipManager.syncBackgroundBrightness();
+  if (typeof FluidBg !== 'undefined') FluidBg.redraw();
 };
 const ARTWORK_SWAP_MAX_WAIT_MS = 1500;
 
 // ボタン列の名前(ホバーで出る説明と読み上げ用の名前)。表示言語を
 // 変えたら付け直す。
 function applyButtonLabels() {
+  // 作った後で表示言語が変わる文字(歌詞のメニュー・Daily Replay の下のボタン)
+  document.querySelectorAll('[data-ytm-text]').forEach((el) => { el.textContent = t(el.dataset.ytmText); });
+  document.querySelectorAll('[data-ytm-title]').forEach((el) => {
+    const label = t(el.dataset.ytmTitle);
+    el.title = label;
+    el.setAttribute('aria-label', label);
+  });
   if (!ui.btnArea) return;
   ui.btnArea.querySelectorAll('[data-ytm-label]').forEach((btn) => {
     const label = t(btn.dataset.ytmLabel);
@@ -10672,6 +11553,13 @@ function setTitleText(el, title) {
 // yt-formatted-string、新バーは ytmusic-track-info の ytmusicTrackInfoByline。
 // 新バーの窓が狭い時は同じバーが 2 つになるので、使っている方から探す
 const ARTIST_BYLINE_SELECTOR = 'yt-formatted-string.byline.complex-string, .ytmusicTrackInfoByline';
+// バーの byline。PlayerBar.query はバーに無ければ文書全体から探すので、
+// キューの行(ytmusic-player-queue-item の byline も同じ class)を拾うことが
+// ある。それは別の曲のアーティスト名なので使わない
+const queryBarByline = () => {
+  const el = PlayerBar.query(ARTIST_BYLINE_SELECTOR);
+  return el && !(typeof el.closest === 'function' && el.closest('ytmusic-player-queue-item')) ? el : null;
+};
 // 新バーのリンクは href を持たない <a role="button"> で、押すと YTM が中で
 // 移動する(実機)。旧バーのように href(channel/…)で拾うと何も拾えず、
 // Immersion のアーティスト名がただの文字になって押しても飛ばなかった。
@@ -10694,16 +11582,57 @@ const readWizArtistLinks = (byline) => {
 // 作り直されるので、控えた要素ではなく名前(無ければ順番)で探し直す。
 // YTM のバーで押した時と同じく、プレイヤーを畳んでアーティストのページへ移る
 const openWizArtist = (name, index) => {
-  const links = readWizArtistLinks(PlayerBar.query(ARTIST_BYLINE_SELECTOR));
+  const links = readWizArtistLinks(queryBarByline());
   const link = links.find(a => a.textContent.trim() === name) || links[index];
   if (link) link.click();
 };
 
+// 今出しているジャケットの元の URL。曲が同じままジャケットだけ変わった時
+// (動画と曲の切り替え・MediaSession が後から追いついた時)に見直すため
+let _artworkSrcShown = null;
+
+// 画面のバーに出ているアーティスト名(リンクにならない時の表示用)。
+// MediaSession のアーティスト名は曲(リリース)ごとに英字のことがあり、
+// 日向坂46 の曲版は「Hinatazaka46」だった(実機)。バーは表示言語の表記で
+// 出すので、バーの曲名が同じ曲の時だけこちらを使う(曲送りの直後は、
+// バーに前の曲が残っていることがある)
+const readShownArtistName = (meta) => {
+  const title = String(meta?.title || '').trim();
+  if (!title) return '';
+  const barTitle = String(document.querySelector(PLAYER_BAR_TITLE_SELECTOR)?.textContent || '').trim();
+  if (!barTitle || normalizeTitleForSettle(barTitle) !== normalizeTitleForSettle(title)) return '';
+  const byline = queryBarByline();
+  const shown = parseBylineArtist(byline?.textContent || '').trim();
+  return shown.length <= 200 ? shown : '';
+};
+
+// アーティスト名をリンクにできないまま、名前だけ出している曲のキー。
+// 窓が狭い(縦長)時の YTM のバーはアーティスト名をリンクにしない(実機)。
+// その間に曲が変わるとリンクを組めず、窓を広げてバーにリンクが戻っても
+// 組み直していなかった。tick でバーにリンクが戻ったのを見て組み直す。
+let _artistLinkPendingKey = null;
+const barHasArtistLinks = () => {
+  const byline = queryBarByline();
+  if (!byline) return false;
+  if (readWizArtistLinks(byline).length) return true;
+  return [...byline.querySelectorAll('a.yt-simple-endpoint, a.ytAttributedStringLink')]
+    .some(a => (a.href || '').includes('channel/'));
+};
+const showArtistNameOnly = (meta) => {
+  ui.artist.innerText = readShownArtistName(meta) || meta.artist;
+};
+
 function updateMetaUI(meta) {
   setTitleText(ui.title, meta.title);
-  ui.artist.innerText = meta.artist;
+  showArtistNameOnly(meta);
+  updateArtworkUI(meta);
+  ui.lyrics.innerHTML = '<div class="lyric-loading" style="opacity:0.5; padding:20px;">Loading...</div>';
+  updateArtistLink(meta);
+}
 
+function updateArtworkUI(meta) {
   if (meta.src) {
+    _artworkSrcShown = meta.src;
     const bgToken = ++_bgLoadToken;
     const img = document.createElement('img');
     img.crossOrigin = 'anonymous';
@@ -10748,6 +11677,8 @@ function updateMetaUI(meta) {
         ctx.drawImage(img, 0, 0, 64, 64);
         const blurredDataUrl = canvas.toDataURL();
         ui.bg.style.backgroundImage = `url(${blurredDataUrl})`;
+        // Apple Music 風の背景(fluid-bg.js)にも同じぼかしたジャケットを渡す
+        if (typeof FluidBg !== 'undefined') FluidBg.setArtwork(canvas);
         applyArtworkDim(measureArtworkLuminance(ctx, 64));
         // 自前のプレイヤーバーを満たす色
         PlayerBar.setTint(PlayerBar.tintFromPixels(ctx.getImageData(0, 0, 64, 64).data, 64));
@@ -10768,23 +11699,29 @@ function updateMetaUI(meta) {
     if (!ui.artwork.querySelector('img')) placeArtwork();
     else setTimeout(placeArtwork, ARTWORK_SWAP_MAX_WAIT_MS);
   }
-  ui.lyrics.innerHTML = '<div class="lyric-loading" style="opacity:0.5; padding:20px;">Loading...</div>';
+}
 
+function updateArtistLink(meta) {
   // アーティストページのURLを取得
   let retryCount = 0;
   const maxRetries = 5;
   const keyAtStart = currentKey;
+  _artistLinkPendingKey = null;
+  const giveUp = () => {
+    showArtistNameOnly(meta);
+    _artistLinkPendingKey = keyAtStart;
+  };
   const trySetArtistLink = () => {
     // 待っている間に次の曲へ進んでいたら、その曲の分は向こうに任せる。
     // 続けると、新しい曲のアーティスト名を前の曲の題名の下に書いてしまう。
     if (currentKey !== keyAtStart) return;
-    const bylineWrapper = PlayerBar.query(ARTIST_BYLINE_SELECTOR);
+    const bylineWrapper = queryBarByline();
     if (!bylineWrapper) {
       retryCount++;
       if (retryCount < maxRetries) {
         setTimeout(trySetArtistLink, 300);
       } else {
-        ui.artist.innerText = meta.artist; // フォールバック
+        giveUp();
       }
       return;
     }
@@ -10851,7 +11788,7 @@ function updateMetaUI(meta) {
     if (retryCount < maxRetries) {
       setTimeout(trySetArtistLink, 300);
     } else {
-      ui.artist.innerText = meta.artist;
+      giveUp();
     }
   };
 
@@ -10885,6 +11822,8 @@ const runtimeSettingsReady = (async function applySavedRuntimeSettings() {
   if (savedAppleSync !== null) config.appleSyncStyle = !!savedAppleSync;
   // 試作: 韓国語の読み(korean-ruby.js)。歌詞を描く前に入り切りを読んでおく
   if (typeof KoreanRuby !== 'undefined') await KoreanRuby.load();
+  // 操作バーを自動で隠す(bar-autohide.js)
+  if (typeof BarAutoHide !== 'undefined') await BarAutoHide.load();
   if (savedSingerColors !== null) config.useSingerColors = !!savedSingerColors;
   document.body.classList.toggle('ytm-singer-colors-enabled', !!config.useSingerColors);
   applyAppleSyncClass();
@@ -10904,9 +11843,9 @@ const runtimeSettingsReady = (async function applySavedRuntimeSettings() {
   // 自分でスライダーを動かした人は保存値がそのまま使われる。
   // 一度も触っていない人は、既存ユーザーも含めて新しい既定値になる。
   const savedBright = await storage.get('ytm_bg_brightness');
-  if (savedBright) {
-    config.bgBrightness = savedBright;
-    document.documentElement.style.setProperty('--ytm-bg-brightness', savedBright);
+  if (savedBright !== null && savedBright !== undefined && savedBright !== '') {
+    config.bgBrightness = normalizeBgBrightness(savedBright);
+    document.documentElement.style.setProperty('--ytm-bg-brightness', String(config.bgBrightness));
   }
 
   // 2-b. UIサイズ
@@ -10923,6 +11862,16 @@ const runtimeSettingsReady = (async function applySavedRuntimeSettings() {
   if (preferSongModeStored !== null && preferSongModeStored !== undefined) {
     config.preferSongMode = !!preferSongModeStored;
   }
+  const levelVolumeStored = await storage.get('ytm_level_volume');
+  if (levelVolumeStored !== null && levelVolumeStored !== undefined) config.levelVolume = !!levelVolumeStored;
+  VolumeLeveler.setEnabled(config.levelVolume !== false);
+  // 動画モードの画質(選んだ画質を覚えている)
+  void VideoQuality.init();
+  // 動画モードで歌詞を映像に重ねるか(既定 入)
+  const movieLyricsStored = await storage.get('ytm_movie_lyrics');
+  if (movieLyricsStored !== null && movieLyricsStored !== undefined) config.movieLyrics = !!movieLyricsStored;
+  document.body.classList.toggle('ytm-movie-lyrics', config.movieLyrics !== false);
+  config.movieSkipScenes = (await storage.get('ytm_movie_skip_scenes')) === true;
 
   // 4. Apple Music風背景オプション
   const appleBgStored = await storage.get('ytm_apple_bg');
@@ -10959,7 +11908,22 @@ const updateAmbientAnimationState = () => {
   const video = document.querySelector('video');
   const idle = document.hidden || !!(video && video.paused);
   document.body.classList.toggle('ytm-anim-idle', idle);
+  syncFluidBg();
 };
+
+// Apple Music 風の背景(fluid-bg.js)を描くかどうか。描かない時は以前の背景
+// (CSS)が出る。動画モードは映像が背景を覆うので描かない。
+function syncFluidBg() {
+  if (typeof FluidBg === 'undefined' || !ui.bg) return;
+  const body = document.body;
+  const video = document.querySelector('video');
+  const show = !!config.appleBg &&
+    !body.classList.contains('ytm-lightweight-mode') &&
+    body.classList.contains('ytm-custom-layout') &&
+    moviemode !== true;
+  const animate = show && !document.hidden && !(video && video.paused);
+  FluidBg.update({ show, animate, host: ui.bg });
+}
 document.addEventListener('visibilitychange', updateAmbientAnimationState);
 document.addEventListener('play', updateAmbientAnimationState, true);
 document.addEventListener('pause', updateAmbientAnimationState, true);

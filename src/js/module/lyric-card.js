@@ -1,8 +1,14 @@
 // 歌詞カード。
 //
-// 聴いている曲の歌詞から 1〜4 行を選び、Immersion と同じ見た目
-// (ジャケットの色の背景・太い白文字・曲名とジャケット)の画像にして、
-// コピーか保存をする。刺さった一節をそのまま友だちや SNS に渡すための機能。
+// 聴いている曲の歌詞から 1〜4 行を選び、Apple Music の歌詞の共有に寄せた見た目
+// (ジャケットの色のグラデーション・大きなジャケットと曲名・太い白文字)の画像にして、
+// コピー・X に投稿・保存をする。刺さった一節をそのまま友だちや SNS に渡すための機能。
+//
+// - 画像は 1600×900(16:9)。X のタイムラインでも Discord でも切れずに出る比率。
+//   以前は 1080×1080 の正方形で、X では上下が切られて歌詞が欠けていた。
+// - 「X に投稿」は、画像をクリップボードに入れてから、歌詞の一節・曲名・曲の
+//   リンクを入れた投稿画面を新しいタブで開く(画像はそこで貼り付ける)。X の
+//   投稿画面のリンクは画像を受け取れないため。Discord は「画像をコピー」して貼る。
 //
 // - 入口はボタン列の「歌詞カード」。押すと選ぶ状態になり、いま歌っている行
 //   (無ければ直前に歌った行)が選ばれている。
@@ -16,11 +22,11 @@
 //
 // 共有画像の器(.ytm-replay-share)は Daily Replay と同じものを使う。
 const LyricCard = (() => {
-  const W = 1080;
-  const H = 1080;
-  const PAD = 88;
+  const W = 1600;
+  const H = 900;
+  const PAD = 96;
   const MAX_LINES = 4;
-  const ART = 132;
+  const ART = 360;
   const FAMILY = '-apple-system, "SF Pro Display", "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif';
   const font = (size, weight) => `${weight || 400} ${size}px ${FAMILY}`;
 
@@ -227,18 +233,34 @@ const LyricCard = (() => {
     return text.split(/(\s+)/);
   };
 
-  // 幅に収まるように折り返す。語の途中では切らず、1 語が幅を超える時だけ字で切る。
-  const wrap = (ctx, text, maxWidth) => {
+  // 切ってよい位置で区切った塊。日本語の行は、本体の歌詞と同じ文節の切れ目
+  // (lyrics-ui.js の budouxPhraseBoundaries。BudouX と、小書き・句読点を行頭に
+  // 置かない・「〜て」の後の補助動詞を離さない等の決まり)で切る。それ以外は語区切り。
+  // budouxPhraseBoundaries は後から読み込まれるが、カードを作るのは利用者の操作の後。
+  const chunksOf = (text) => {
+    const cuts = typeof budouxPhraseBoundaries === 'function' ? budouxPhraseBoundaries(text) : null;
+    if (!cuts) return segmentsOf(text);
+    const out = [];
+    let from = 0;
+    for (const to of [...cuts, text.length]) {
+      if (to > from) out.push(text.slice(from, to));
+      from = to;
+    }
+    return out;
+  };
+
+  // 幅に収まるように前から詰める。塊の途中では切らず、1 つの塊が幅を超える時だけ字で切る。
+  const fill = (ctx, chunks, maxWidth) => {
     const lines = [];
     let line = '';
-    for (const seg of segmentsOf(text)) {
+    for (const seg of chunks) {
       const candidate = line + seg;
       if (ctx.measureText(candidate).width <= maxWidth || !line.trim()) {
         if (ctx.measureText(candidate).width <= maxWidth) {
           line = candidate;
           continue;
         }
-        // 1 語だけで幅を超える: 字で切る
+        // 1 つの塊だけで幅を超える: 字で切る
         for (const ch of seg) {
           if (ctx.measureText(line + ch).width > maxWidth && line.trim()) {
             lines.push(line.trimEnd());
@@ -258,6 +280,26 @@ const LyricCard = (() => {
     }
     if (line.trim()) lines.push(line.trimEnd());
     return lines;
+  };
+
+  // 折り返す。前から詰めるだけだと「1 行目がいっぱいで 2 行目に数文字」になるので、
+  // 同じ行数で収まるいちばん狭い幅を探して組み直し、行の長さを揃える
+  // (CSS の text-wrap: balance と同じ考え。本体の歌詞もこれで折り返している)。
+  const wrap = (ctx, text, maxWidth) => {
+    const chunks = chunksOf(text);
+    const lines = fill(ctx, chunks, maxWidth);
+    if (lines.length < 2) return lines;
+    // いちばん長い塊より狭くはしない(狭めると塊を字で割ってしまう。「したっ / て」)
+    const widest = Math.max(...chunks.map(c => ctx.measureText(c.trim()).width));
+    if (widest >= maxWidth) return lines;
+    let lo = widest;
+    let hi = maxWidth;
+    for (let i = 0; i < 14 && hi - lo > 1; i++) {
+      const mid = (lo + hi) / 2;
+      if (fill(ctx, chunks, mid).length <= lines.length) hi = mid;
+      else lo = mid;
+    }
+    return fill(ctx, chunks, hi);
   };
 
   // 選んだ行を、枠に収まる最大の文字サイズで組む
@@ -297,6 +339,41 @@ const LyricCard = (() => {
     }
   };
 
+  // ジャケットから背景の 2 色を取る。暗すぎる色は外し、彩度の高い色を先にする
+  // (試作で、暗いジャケットだとほぼ黒が選ばれて背景が真っ黒になった)。
+  const paletteOf = (img) => {
+    try {
+      const N = 24;
+      const c = document.createElement('canvas');
+      c.width = N;
+      c.height = N;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.drawImage(img, 0, 0, N, N);
+      const d = x.getImageData(0, 0, N, N).data;
+      const buckets = new Map();
+      for (let i = 0; i + 3 < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const mx = Math.max(r, g, b);
+        const mn = Math.min(r, g, b);
+        const key = `${r >> 5},${g >> 5},${b >> 5}`;
+        const e = buckets.get(key) || { n: 0, r: 0, g: 0, b: 0, s: 0, v: 0 };
+        e.n++; e.r += r; e.g += g; e.b += b; e.s += mx ? (mx - mn) / mx : 0; e.v += mx;
+        buckets.set(key, e);
+      }
+      const cols = [...buckets.values()]
+        .filter(e => e.v / e.n > 55)
+        .map(e => ({ r: e.r / e.n, g: e.g / e.n, b: e.b / e.n, score: e.n * (0.12 + e.s / e.n) * Math.pow(e.v / e.n / 255, 0.7) }))
+        .sort((a, b) => b.score - a.score);
+      if (!cols.length) return null;
+      const main = cols[0];
+      const far = (c2) => Math.abs(c2.r - main.r) + Math.abs(c2.g - main.g) + Math.abs(c2.b - main.b) > 90;
+      return { main, second: cols.find(far) || cols[1] || main };
+    } catch (e) {
+      return null;   // 読み出せないジャケット(CORS)
+    }
+  };
+  const rgb = (c, k = 1) => `rgb(${Math.round(c.r * k)},${Math.round(c.g * k)},${Math.round(c.b * k)})`;
+
   const render = async ({ lines, title, artist, artworkSrc }) => {
     const img = await loadImage(artworkSrc);
     const canvas = document.createElement('canvas');
@@ -304,56 +381,59 @@ const LyricCard = (() => {
     canvas.height = H;
     const ctx = canvas.getContext('2d');
 
-    // 背景: ジャケットを大きくぼかして敷き、明るさに応じて沈める
-    ctx.fillStyle = '#121216';
+    // 背景: ジャケットの 2 色のグラデーション。読めない時は暗い色
+    const pal = img ? paletteOf(img) : null;
+    ctx.fillStyle = '#16161c';
     ctx.fillRect(0, 0, W, H);
-    if (img) {
-      ctx.save();
-      ctx.filter = 'blur(70px) saturate(150%)';
-      ctx.drawImage(img, -W * 0.2, -H * 0.2, W * 1.4, H * 1.4);
-      ctx.restore();
-      const luma = averageLuminance(img);
-      ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.78, 0.34 + luma * 0.5).toFixed(3)})`;
+    if (pal) {
+      const g = ctx.createLinearGradient(0, 0, W, H);
+      g.addColorStop(0, rgb(pal.main, 0.85));
+      g.addColorStop(1, rgb(pal.second, 0.4));
+      ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
     }
-    const vignette = ctx.createRadialGradient(W / 2, H * 0.45, W * 0.2, W / 2, H / 2, W * 0.8);
+    // 白い字が読めるように少し沈め、四隅を暗くする
+    const luma = img ? averageLuminance(img) : 0.3;
+    ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.55, 0.16 + luma * 0.35).toFixed(3)})`;
+    ctx.fillRect(0, 0, W, H);
+    const vignette = ctx.createRadialGradient(W * 0.5, H * 0.5, H * 0.3, W * 0.5, H * 0.5, W * 0.75);
     vignette.addColorStop(0, 'rgba(0,0,0,0)');
-    vignette.addColorStop(1, 'rgba(0,0,0,0.45)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.35)');
     ctx.fillStyle = vignette;
     ctx.fillRect(0, 0, W, H);
 
-    // 見出し: ジャケット・曲名・アーティスト
-    let textX = PAD;
+    // 左: 大きなジャケットと、その下に曲名・アーティスト
+    const leftW = ART;
+    const artY = Math.round((H - ART - 120) / 2);
     if (img) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.45)';
-      ctx.shadowBlur = 30;
-      ctx.shadowOffsetY = 10;
-      roundRectPath(ctx, PAD, PAD, ART, ART, 18);
+      ctx.shadowBlur = 50;
+      ctx.shadowOffsetY = 18;
+      roundRectPath(ctx, PAD, artY, ART, ART, 28);
       ctx.fillStyle = '#000';
       ctx.fill();
       ctx.restore();
       ctx.save();
-      roundRectPath(ctx, PAD, PAD, ART, ART, 18);
+      roundRectPath(ctx, PAD, artY, ART, ART, 28);
       ctx.clip();
-      ctx.drawImage(img, PAD, PAD, ART, ART);
+      ctx.drawImage(img, PAD, artY, ART, ART);
       ctx.restore();
-      textX = PAD + ART + 30;
     }
-    const headWidth = W - PAD - textX;
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
-    ctx.font = font(42, 700);
-    ctx.fillText(ellipsize(ctx, title, headWidth), textX, PAD + 58);
-    ctx.fillStyle = 'rgba(255,255,255,0.62)';
+    ctx.font = font(40, 700);
+    ctx.fillText(ellipsize(ctx, title, leftW), PAD, artY + ART + 62);
+    ctx.fillStyle = 'rgba(255,255,255,0.68)';
     ctx.font = font(32, 500);
-    ctx.fillText(ellipsize(ctx, artist, headWidth), textX, PAD + 106);
+    ctx.fillText(ellipsize(ctx, artist, leftW), PAD, artY + ART + 106);
 
-    // 歌詞
-    const top = PAD + ART + 70;
-    const bottom = H - PAD - 64;
-    const maxWidth = W - PAD * 2;
+    // 右: 歌詞(枠に収まる最大の大きさで、縦の真ん中に)
+    const lx = PAD + leftW + 96;
+    const top = PAD;
+    const bottom = H - PAD - 40;
+    const maxWidth = W - PAD - lx;
     const layout = layoutLyrics(ctx, lines, maxWidth, bottom - top);
     if (layout) {
       let y = top + Math.max(0, (bottom - top - layout.height) / 2);
@@ -365,26 +445,28 @@ const LyricCard = (() => {
         ctx.shadowBlur = 18;
         block.main.forEach((text, li) => {
           if (y + layout.size > bottom + layout.size * 0.3) return;
-          ctx.fillText(text, PAD, y + li * layout.size * 1.22);
+          ctx.fillText(text, lx, y + li * layout.size * 1.22);
         });
         let yy = y + block.main.length * layout.size * 1.22;
         ctx.shadowBlur = 0;
         if (block.sub.length) {
           yy += 10;
           ctx.font = font(layout.subSize, 500);
-          ctx.fillStyle = 'rgba(255,255,255,0.66)';
-          block.sub.forEach((text, li) => ctx.fillText(text, PAD, yy + li * layout.subSize * 1.35));
+          ctx.fillStyle = 'rgba(255,255,255,0.7)';
+          block.sub.forEach((text, li) => ctx.fillText(text, lx, yy + li * layout.subSize * 1.35));
         }
         y += block.h + (bi < layout.blocks.length - 1 ? layout.size * 0.55 : 0);
       });
     }
 
-    // 署名
+    // 署名(右下)
     ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'right';
     ctx.shadowBlur = 0;
     ctx.font = font(26, 600);
-    ctx.fillStyle = 'rgba(255,255,255,0.42)';
-    ctx.fillText('YTM Immersion', PAD, H - PAD + 10);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText('YTM Immersion', W - PAD, H - PAD + 30);
+    ctx.textAlign = 'left';
 
     return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
   };
@@ -413,7 +495,32 @@ const LyricCard = (() => {
     return `lyric_card_${safe}.png`;
   };
 
-  const showDialog = (blob, title) => {
+  // 曲のリンク。X の投稿や Discord に貼る。取れなければ null
+  const songUrl = () => {
+    const id = typeof getCurrentVideoId === 'function' ? getCurrentVideoId() : null;
+    return id ? `https://music.youtube.com/watch?v=${encodeURIComponent(id)}` : null;
+  };
+
+  // X の投稿画面に入れる文。歌詞の最初の行(長ければ縮める)と曲名・アーティスト
+  const postTextFor = ({ lines, title, artist }) => {
+    const first = String(lines?.[0]?.text || '').trim();
+    const quote = first.length > 80 ? `${first.slice(0, 79)}…` : first;
+    const credit = [title, artist].filter(Boolean).join(' / ');
+    return [quote ? `“${quote}”` : '', credit].filter(Boolean).join('\n');
+  };
+
+  const copyImage = async (blob) => {
+    if (!navigator.clipboard || typeof ClipboardItem === 'undefined') return false;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      return true;
+    } catch (e) {
+      console.warn('[LyricCard] clipboard failed', e);
+      return false;
+    }
+  };
+
+  const showDialog = (blob, title, info = {}) => {
     closeDialog();
     objectUrl = URL.createObjectURL(blob);
     const root = createEl('div', 'ytm-lyric-card-share', 'ytm-replay-share', `
@@ -425,6 +532,8 @@ const LyricCard = (() => {
         <img class="replay-share-img" alt="">
         <div class="replay-share-actions">
           <button type="button" class="replay-footer-btn replay-share-copy"></button>
+          <button type="button" class="replay-footer-btn replay-share-x"></button>
+          <button type="button" class="replay-footer-btn replay-share-link"></button>
           <button type="button" class="replay-footer-btn replay-share-save"></button>
         </div>
       </div>
@@ -454,16 +563,41 @@ const LyricCard = (() => {
     } else {
       copyBtn.textContent = t('replay_share_copy');
       copyBtn.onclick = async () => {
-        try {
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-          copyBtn.textContent = t('replay_share_copied');
-        } catch (e) {
-          console.warn('[LyricCard] clipboard failed', e);
-          copyBtn.textContent = t('replay_share_copy_failed');
-        }
+        copyBtn.textContent = (await copyImage(blob)) ? t('replay_share_copied') : t('replay_share_copy_failed');
         setTimeout(() => { copyBtn.textContent = t('replay_share_copy'); }, 1800);
       };
       copyBtn.focus();
+    }
+
+    // X に投稿: 画像をクリップボードに入れてから、文とリンクを入れた投稿画面を開く。
+    // 画像は投稿画面で貼り付けてもらう(投稿画面のリンクは画像を受け取れない)。
+    const xBtn = root.querySelector('.replay-share-x');
+    xBtn.textContent = t('lyric_card_post_x');
+    xBtn.onclick = async () => {
+      const copied = await copyImage(blob);
+      const params = new URLSearchParams({ text: postTextFor(info) });
+      const url = songUrl();
+      if (url) params.set('url', url);
+      window.open(`https://x.com/intent/tweet?${params.toString()}`, '_blank', 'noopener');
+      if (typeof showToast === 'function') showToast(t(copied ? 'lyric_card_x_hint' : 'lyric_card_x_hint_save'));
+    };
+
+    // リンクをコピー: Discord などで、画像と一緒に曲へ飛べるように
+    const linkBtn = root.querySelector('.replay-share-link');
+    const url = songUrl();
+    if (!url || !navigator.clipboard) {
+      linkBtn.remove();
+    } else {
+      linkBtn.textContent = t('lyric_card_copy_link');
+      linkBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          linkBtn.textContent = t('lyric_card_link_copied');
+        } catch (e) {
+          linkBtn.textContent = t('replay_share_copy_failed');
+        }
+        setTimeout(() => { linkBtn.textContent = t('lyric_card_copy_link'); }, 1800);
+      };
     }
   };
 
@@ -487,7 +621,7 @@ const LyricCard = (() => {
       if (myGeneration !== generation || !selecting) return;
       if (!blob) throw new Error('toBlob returned null');
       cancel();
-      showDialog(blob, title);
+      showDialog(blob, title, { lines, title, artist });
     } catch (e) {
       if (myGeneration !== generation) return;
       console.error('[LyricCard] build failed', e);
@@ -506,5 +640,6 @@ const LyricCard = (() => {
     // テスト用
     _nextRange: nextRange,
     _wrap: wrap,
+    _render: render,
   };
 })();

@@ -332,6 +332,61 @@
       ?.counterpart?.[0]?.counterpartRenderer?.playlistPanelVideoRenderer?.videoId || null;
   };
 
+  // ■ 曲 ⇔ 動画の時刻の対応(segmentMap)
+  //   counterpart には「音源の何秒が MV の何秒か」の区間の並びも入っている
+  //   (YT-Immersion の music_resolver.js と同じもの。ログイン状態の時だけ)。
+  //   実測(YT-Immersion, 2026-10-14): NewJeans「Ditto」MV は音源の 0 秒 = MV の 82.035 秒、
+  //   BTS「Dynamite」は 23.7 秒。動画モードの歌詞の時刻合わせに使う(lyrics-ui.js)。
+  //   primary が問い合わせた動画、counterpart がもう片方。どちらが MV かは
+  //   問い合わせた videoId で決める: 返すのは「その videoId の時刻 → もう片方の時刻」。
+  //   返す区間: { videoStart: 問い合わせた動画の秒, songStart: もう片方の秒, dur: 秒 }
+  const readSegmentInfo = (nextRes, videoId) => {
+    const wrapper = readQueueHead(nextRes)?.playlistPanelVideoWrapperRenderer;
+    const cp = wrapper?.counterpart?.[0];
+    const segs = cp?.segmentMap?.segment;
+    if (!Array.isArray(segs) || !segs.length) return null;
+    const primaryId = wrapper?.primaryRenderer?.playlistPanelVideoRenderer?.videoId || null;
+    const counterpartId = cp?.counterpartRenderer?.playlistPanelVideoRenderer?.videoId || null;
+    let swap;
+    if (primaryId === videoId) swap = false;
+    else if (counterpartId === videoId) swap = true;
+    else return null;
+    const out = segs.map((x) => {
+      const p = Number(x.primaryVideoStartTimeMilliseconds) / 1000;
+      const c = Number(x.counterpartVideoStartTimeMilliseconds) / 1000;
+      return { videoStart: swap ? c : p, songStart: swap ? p : c, dur: Number(x.durationMilliseconds) / 1000 };
+    }).filter(x => Number.isFinite(x.videoStart) && Number.isFinite(x.songStart) && x.dur > 0)
+      .sort((a, b) => a.videoStart - b.videoStart);
+    return out.length ? out : null;
+  };
+
+  // 対応表の控え。歌詞の取得(tryFetch)でついでに取れた分も入れる。
+  // 値: 区間の配列 / null(対応表が無い) 。未取得は has で見分ける。
+  const SEGMENT_CACHE_LIMIT = 50;
+  const segmentCache = new Map();
+  const segmentPending = new Map();
+  const rememberSegments = (videoId, nextRes) => {
+    if (!videoId || !nextRes) return;
+    if (segmentCache.size >= SEGMENT_CACHE_LIMIT) segmentCache.delete(segmentCache.keys().next().value);
+    segmentCache.set(videoId, readSegmentInfo(nextRes, videoId));
+  };
+  globalThis.YTMSegmentMap = {
+    // 取得済みなら区間の配列か null、まだなら undefined
+    peek: (videoId) => (segmentCache.has(videoId) ? segmentCache.get(videoId) : undefined),
+    fetch: (videoId) => {
+      if (!videoId) return Promise.resolve(null);
+      if (segmentCache.has(videoId)) return Promise.resolve(segmentCache.get(videoId));
+      if (segmentPending.has(videoId)) return segmentPending.get(videoId);
+      const job = post('next', CLIENT_WEB, { videoId })
+        .then((res) => { rememberSegments(videoId, res); return segmentCache.get(videoId) ?? null; })
+        .catch(() => null)
+        .finally(() => segmentPending.delete(videoId));
+      segmentPending.set(videoId, job);
+      return job;
+    },
+    _readSegmentInfo: readSegmentInfo,
+  };
+
   // next 応答に入っているキュー全体を読む。
   // YTM のキュー DOM には videoId もサムネイル URL も残っていない
   // (実測: ytmusic-player-queue-item の中に a 要素が1つも無く、img は
@@ -606,6 +661,7 @@
   //   同期歌詞が取れる ANDROID_MUSIC を先に試し、駄目な時だけこちらに落とす。
   const tryFetch = async (videoId) => {
     const nextRes = await post('next', CLIENT_WEB, { videoId });
+    rememberSegments(videoId, nextRes);
     const tab = findLyricsTab(nextRes);
     if (!tab || tab.unselectable) return { nextRes, result: null, browseId: null };
 

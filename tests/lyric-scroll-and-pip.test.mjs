@@ -53,11 +53,20 @@ test('word timings are written to attributes so they survive the copy', () => {
 
 test('measurement uses the document the line actually lives in', () => {
   // PIP は別ウィンドウ・別文書。main の document で測ると別の窓の値になる。
-  const fn = sourceBetween(lyricsUiSource, 'const measureLyricLineSweep', 'const lyricSweepAt')
+  const fn = sourceBetween(lyricsUiSource, 'const readLyricLineSweep', 'const applyLyricLineSweep')
   assert.match(fn, /row\.ownerDocument/)
   assert.match(fn, /doc\.createRange\(\)/)
   assert.match(fn, /view \? parseFloat\(view\.getComputedStyle\(row\)/)
   assert.ok(!/[^.]\bdocument\.createRange/.test(fn), 'must not fall back to the main document')
+})
+
+test('行の計測は読むと書くを分け、まとめて測る時は全部読んでから全部書く', () => {
+  // 語ごとに読む → --wx を書く、を繰り返すと、書いた直後の読みのたびに
+  // スタイルの再計算が走り、単語同期に切り替わった直後のスクロールがカクついた
+  const read = sourceBetween(lyricsUiSource, 'const readLyricLineSweep', 'const applyLyricLineSweep')
+  assert.doesNotMatch(read, /style\.setProperty/)
+  assert.match(lyricsUiSource, /batch\.map\(readLyricLineSweep\)\.forEach\(applyLyricLineSweep\);/)
+  assert.match(lyricsUiSource, /const measureLyricLineSweep = \(row\) => applyLyricLineSweep\(readLyricLineSweep\(row\)\);/)
 })
 
 test('the PIP window carries the same word-sync rules as the main window', () => {

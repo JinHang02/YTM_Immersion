@@ -69,6 +69,13 @@ test('通常画面の明るさ × ジャケットの減光を PiP に渡す', ()
   assert.equal(env.pipVars.get('--pip-bg-brightness'), '0.300')
 })
 
+test('明るさ 0 は既定値に化けず、PiP も真っ黒にする', () => {
+  const env = setup({ rootVars: { '--ytm-bg-brightness': '0', '--ytm-bg-art-dim': '0.8' } })
+  env.openPip()
+  env.pip.syncBackgroundBrightness()
+  assert.equal(env.pipVars.get('--pip-bg-brightness'), '0.000')
+})
+
 test('明るさを保存していない人は既定の明るさ、減光が無い曲は 1 として掛ける', () => {
   const env = setup()
   env.openPip()

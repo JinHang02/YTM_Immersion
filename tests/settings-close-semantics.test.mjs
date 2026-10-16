@@ -9,7 +9,11 @@
 //   - 取得元のオン・オフ(差し込んだ許可ページ)はその場で保存されるのに、
 //     今の曲の取り直しは親の「保存」を押した時だけだった
 //
-// 「保存」で確定し、ほかの閉じ方は保存していない変更を捨てる。
+// 2026-10 から、設定は変えるたびに保存する(保存ボタンは無い。押し忘れて閉じると
+// 変更が消え、保存の仕方が分かりにくいという声があった)。保存するたびに「閉じた時に
+// 戻す基準」を今の値にそろえるので、閉じても何も戻らない。変えた直後(自動保存の
+// 待ち)や保存の途中に閉じられた時は、捨てずに保存してから閉じる。
+// 下の「保存せずに閉じると戻る」は、保存の処理が無い(開いただけの)時の動き。
 // その場で保存される取得元の切り替えは、どの閉じ方でも閉じた時に反映する。
 
 import assert from 'node:assert/strict'
@@ -49,9 +53,12 @@ const setup = ({ stored = {}, meta = { title: 'アイドル', artist: 'YOASOBI' 
       contains: c => classes.has(c),
     },
   }
+  const timers = []
   const context = vm.createContext({
     config,
     ui: { settings },
+    setTimeout: (fn) => { timers.push(fn); return timers.length },
+    clearTimeout: () => {},
     storage: { get: async (key) => (key in stored ? stored[key] : null) },
     DISABLED_LYRIC_SOURCES_KEY: 'ytm_disabled_lyric_sources',
     normalizeDisabledLyricSources: (v) => (Array.isArray(v) ? [...v] : []),
@@ -71,9 +78,9 @@ const setup = ({ stored = {}, meta = { title: 'アイドル', artist: 'YOASOBI' 
       getElementById: (id) => (id === 'ui-lang-etc-menu' ? etcMenu : null),
     },
   })
-  vm.runInContext(`${lifecycle}\nthis.api = { openSettings, closeSettings, get session() { return settingsSession } };`, context)
+  vm.runInContext(`${lifecycle}\nthis.api = { openSettings, closeSettings, scheduleSettingsAutosave, get session() { return settingsSession } };`, context)
   const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)) }
-  return { api: context.api, config, classes, rootVars, loads, flush, etcMenu, renders: () => renders, pipBrightnessSyncs }
+  return { api: context.api, config, classes, rootVars, loads, flush, etcMenu, renders: () => renders, pipBrightnessSyncs, settings, timers }
 }
 
 test('開くたびに保存済みの値から描き直す', async () => {
@@ -166,7 +173,7 @@ test('閉じる道はすべて closeSettings を通る', () => {
 })
 
 test('保存での取り直しの判定も、開いた時の状態と比べる', () => {
-  const save = between("document.getElementById('save-settings-btn').onclick", 'const translationChanged')
+  const save = between('const commitSettings = async ({ close = false } = {}) => {', 'const translationChanged')
   assert.match(save, /const session = settingsSession;/)
   assert.match(save, /session\.sourcesChanged \|\|\s*session\.disabledSources !== disabledSourcesKey\(config\.disabledLyricSources\)/)
 })
@@ -175,4 +182,27 @@ test('開いたまま描き直す時(表示言語の切り替え)は書きかけ
   const render = between('function renderSettingsPanel() {', '\n  // 閉じるボタン')
   assert.match(render, /const draft = ui\.settings\.classList\.contains\('active'\) \? readSettingsDraft\(\) : null;/)
   assert.match(render, /if \(draft\) writeSettingsDraft\(draft\);/)
+})
+
+test('変えた直後(自動保存の待ち)に閉じたら、捨てずに保存してから閉じる', async () => {
+  const env = setup()
+  await env.api.openSettings()
+  const commits = []
+  env.settings._commitSettings = async (opts) => { commits.push(opts) }
+  env.config.uiScale = 1.3
+  env.api.scheduleSettingsAutosave()
+  env.api.closeSettings()
+  await env.flush()
+  // 偽の環境(vm)の中で作られたオブジェクトなので、JSON で比べる
+  assert.equal(JSON.stringify(commits), JSON.stringify([{ close: true }]))
+  // 戻していない(保存の処理が閉じる)
+  assert.equal(env.config.uiScale, 1.3)
+})
+
+test('保存ボタンは無く、変えたら自動で保存する', () => {
+  assert.ok(!/save-settings-btn/.test(ui), '保存ボタンが残っている')
+  assert.match(ui, /el\.matches\('\.settings-panel input'\) && el\.id !== 'settings-search'\) scheduleSettingsAutosave\(\);/)
+  assert.match(ui, /ui\.settings\._commitSettings = commitSettings;/)
+  // 開いたまま保存したら、閉じた時に戻す基準をそろえる
+  assert.match(ui, /settingsSession\.snapshot = Object\.fromEntries\(SETTINGS_LIVE_KEYS\.map/)
 })

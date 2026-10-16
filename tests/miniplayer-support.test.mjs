@@ -82,12 +82,22 @@ test('隠れているナビバーは押下を下へ通し、ナビバーの高�
   assert.doesNotMatch(css, /ytmusic-nav-bar::before/)
   // カーソルの位置で出す。押せるものの上では出さない
   const src = ui.slice(ui.indexOf('const NAV_PEEK_CLASS'), ui.indexOf("document.addEventListener('mousemove', onNavPeekMove"))
-  const run = (y, target, shownLayout = true) => {
+  const load = (shownLayout = true, under = []) => {
     const body = { classList: { set: new Set(shownLayout ? ['ytm-custom-layout'] : []), contains(c) { return this.set.has(c) }, toggle(c, on) { on ? this.set.add(c) : this.set.delete(c) } } }
     class Element { constructor(sel) { this.sel = sel } closest(s) { return this.sel && s.split(', ').includes(this.sel) ? this : null } }
-    const move = new Function('document', 'Element', `${src}\nreturn onNavPeekMove;`)({ body }, Element)
-    move({ clientY: y, target: new Element(target) })
-    return body.classList.set.has('ytmi-nav-peek')
+    const timers = []
+    const doc = { body, elementsFromPoint: () => under.map(sel => new Element(sel)) }
+    const move = new Function('document', 'Element', 'setTimeout', 'clearTimeout', `${src}\nreturn onNavPeekMove;`)(
+      doc, Element, (fn) => { timers.push(fn); return timers.length }, (id) => { timers[id - 1] = null })
+    const fire = () => { const all = timers.splice(0); for (const fn of all) if (fn) fn() }
+    return { move: (y, target) => move({ clientX: 10, clientY: y, target: new Element(target) }), fire, under, peeked: () => body.classList.set.has('ytmi-nav-peek'), yielded: () => body.classList.set.has('ytmi-nav-yield') }
+  }
+  // 帯に少し留まったら出す(タイマーが来たら)
+  const run = (y, target, shownLayout = true) => {
+    const t = load(shownLayout)
+    t.move(y, target)
+    t.fire()
+    return t.peeked()
   }
   assert.equal(run(40, null), true)
   assert.equal(run(70, null), true)
@@ -96,6 +106,28 @@ test('隠れているナビバーは押下を下へ通し、ナビバーの高�
   assert.equal(run(40, '.lyric-line'), false)
   assert.equal(run(40, 'ytmusic-av-toggle'), false)
   assert.equal(run(40, null, false), false)
+  // 通り過ぎただけ(タイマーが来る前に帯を出た)なら出さない
+  {
+    const t = load()
+    t.move(40, null)
+    t.move(200, null)
+    t.fire()
+    assert.equal(t.peeked(), false)
+  }
+  // 出ている間に、ナビバーの下に Immersion のボタンがある所へ来たら引っ込める
+  {
+    const t = load()
+    t.move(40, null)
+    t.fire()
+    assert.equal(t.peeked(), true)
+    t.under.push('ytmusic-av-toggle')
+    t.move(40, null)
+    assert.equal(t.peeked(), false)
+    // 乗ったまま(:hover)でもナビバーを素通しにする
+    assert.equal(t.yielded(), true)
+    t.move(200, null)
+    assert.equal(t.yielded(), false)
+  }
 })
 
 test('新バーの右の列は、シークバーに被さった所の押下を下へ通す(Immersion の外でも)', () => {

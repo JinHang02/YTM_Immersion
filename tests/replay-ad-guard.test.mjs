@@ -52,3 +52,10 @@ test('広告中は広告の動画 ID と再生時間を履歴に反映しない'
   assert.equal(manager.currentPlayTime, 31)
   assert.equal(state.writes, 1)
 })
+
+test('再生時間の書き込みは 30 秒ごと。曲が変わる時に前の曲の残りを書く', () => {
+  const src = fs.readFileSync(new URL('../src/js/module/replay-manager.js', import.meta.url), 'utf8')
+  assert.match(src, /SAVE_EVERY_SEC: 30,/)
+  assert.match(src, /this\.currentPlayTime - this\.lastSaveTime >= this\.SAVE_EVERY_SEC/)
+  assert.match(src, /if \(vid !== this\.currentVideoId\) \{[\s\S]{0,300}this\.updateDuration\(this\.currentVideoId, this\.currentPlayTime, this\.currentLyricLines\)/)
+})

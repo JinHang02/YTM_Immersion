@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YTM-Immersion",
-  "version": "2.4.3",
+  "version": "3.0.0",
   "description": "YouTube Musicをもっと美しく",
   "permissions": [
     "storage",
@@ -64,12 +64,29 @@
         "src/js/module/ytm-lyrics.js",
         "src/js/module/budoux-ja.js",
         "src/js/module/korean-ruby.js",
+        "src/js/module/builtin-translate.js",
+        "src/js/module/bar-autohide.js",
+        "src/js/module/fluid-bg.js",
+        "src/js/module/volume-leveler.js",
+        "src/js/module/video-quality.js",
         "src/js/module/lyrics-ui.js",
         "src/js/content.js"
       ],
       "css": [
         "src/css/style.css"
       ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "src/js/page/loudness-bridge.js",
+        "src/js/page/queue-bridge.js",
+        "src/js/page/quality-bridge.js"
+      ],
+      "world": "MAIN",
       "run_at": "document_idle"
     }
   ],

@@ -17,6 +17,7 @@ const css = read('src/css/style.css')
 // ── 小さな偽の DOM ──
 class Node {
   constructor(tag, cls = '') { this.tagName = tag; this.className = cls; this.children = []; this.attrs = {}; this.dataset = {}; this.textContent = ''; this.offsetParent = {} ; this.listeners = {} }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null }
   appendChild(c) { this.children.push(c); c.parentNode = this; return c }
   hasAttribute(k) { return k in this.attrs }
   querySelector(sel) {
@@ -46,11 +47,11 @@ const run = (titles, currentIdx) => {
   container.scrollTop = 0
   const panel = new Node('div'); panel.appendChild(container)
   panel.querySelector = (s) => (s === '.queue-list-content' ? container : null)
-  const document = { querySelectorAll: () => items, querySelector: () => null }
+  const document = { querySelectorAll: () => items, querySelector: () => null, dispatchEvent() { } }
   const createEl = (tag, id, cls) => new Node(tag, cls)
   const ctx = vm.createContext({
     document, window: {}, location: { href: 'https://music.youtube.com/watch?v=x', origin: 'https://music.youtube.com' },
-    ui: { queuePanel: panel }, config: {}, createEl, escapeHtml: (s) => String(s), parseBylineArtist: (s) => s, URL, Map, Set, Array, String, setTimeout,
+    ui: { queuePanel: panel }, config: {}, createEl, escapeHtml: (s) => String(s), parseBylineArtist: (s) => s, URL, Map, Set, Array, String, setTimeout, CustomEvent: class { constructor(type) { this.type = type } },
     chrome: { runtime: { sendMessage() { } } }, storage: { get: async () => null }, YTMLog: { log() { } }, trimMapToLimit() { },
   })
   vm.runInContext(`${queueSource}\nthis.QM = QueueManager;`, ctx)
@@ -89,4 +90,10 @@ test('再生済みの曲は控えめに表示し、乗せれば普通に見え�
 test('先読みはこれから流れる曲だけ(再生済みの行では行わない)', () => {
   const past = queueSource.slice(queueSource.indexOf('pastItems.forEach((item) => {'), queueSource.indexOf('const seenIds = new Set();'))
   assert.doesNotMatch(past, /_prefetchLyrics|YTMLyrics\.fetch/)
+})
+
+test('Up Next の行に、歌詞の有無で色の枠を付けない(先読みは続ける)', () => {
+  assert.doesNotMatch(queueSource, /_applyLoadedLyricsHighlight|_refreshHighlights/)
+  assert.doesNotMatch(queueSource, /row\.style\.(border|boxShadow) =/)
+  assert.match(queueSource, /_prefetchLyrics: function \(meta\)/)
 })

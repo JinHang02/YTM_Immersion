@@ -36,13 +36,10 @@ const narrowBlock = () => {
   throw new Error('ブロックが閉じていない')
 }
 
-test('狭い窓では新バーも旧バーと同じ 24px に下ろす(取得元の表示の位置と揃える)', () => {
+test('狭い窓では新バーも旧バーと同じ 24px に下ろす', () => {
   const narrow = narrowBlock()
   assert.match(block(narrow, 'body.ytm-custom-layout ytmusic-player-bar {'), /bottom: 24px !important/)
   assert.match(block(narrow, 'body.ytm-custom-layout ytmusic-miniplayer {'), /bottom: 24px !important/)
-  // 取得元の表示はこの 24px を前提に置いている
-  assert.match(block(narrow, 'body.ytm-custom-layout #ytm-lyrics-source-debug.ytm-source-inline {'),
-    /bottom: calc\(24px \+ \(80px \* var\(--ytm-ui-scale, 1\)\) \+ 8px\)/)
 })
 
 test('畳んだ検索欄は残りの幅いっぱいに広げ、開いたらナビバーを基準にする', () => {
@@ -82,4 +79,13 @@ test('新バーのつまみは線の太さに合わせて真ん中に置く', ()
 test('旧バーの自前の丸は、線そのものの縦の中央に置く', () => {
   assert.match(ns, /querySelector\('#progressContainer'\)\?\.getBoundingClientRect\(\)/)
   assert.match(ns, /const handleY = yRect\.top \+ yRect\.height \/ 2;/)
+})
+
+test('動画モードで縦長から横長へ戻しても、マウスを動かせばバーが出る', () => {
+  // 狭い窓で YTM が作る 2 つ目のバー(#top-player-bar)がページの先に見つかり、
+  // 印を外す相手を取り違えて本物のバーが隠れたままになっていた
+  const cloudSync = fs.readFileSync(new URL('../src/js/module/cloud-sync.js', import.meta.url), 'utf8')
+  const fn = cloudSync.slice(cloudSync.indexOf('const handleInteraction = () => {'), cloudSync.indexOf('const storage = {'))
+  assert.match(fn, /const playerBar = \(typeof PlayerBar !== 'undefined' && PlayerBar\.get\(\)\)/)
+  assert.match(fn, /querySelectorAll\('ytmusic-player-bar\.inactive, ytmusic-miniplayer\.inactive'\)/)
 })

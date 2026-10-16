@@ -285,6 +285,10 @@
       if (!vid) return;
 
       if (vid !== this.currentVideoId) {
+        // 前の曲の、まだ書いていない再生時間を書いておく(書くのは 30 秒ごとなので)
+        if (this.hasRecordedCurrent && this.currentPlayTime > this.lastSaveTime && !this.isRecording) {
+          void this.updateDuration(this.currentVideoId, this.currentPlayTime, this.currentLyricLines);
+        }
         this.currentVideoId = vid;
         this.hasRecordedCurrent = false;
         this.isRecording = false;
@@ -326,7 +330,7 @@
             } finally {
               this.isRecording = false;
             }
-          } else if (this.currentPlayTime - this.lastSaveTime >= 5 && !this.isRecording) {
+          } else if (this.currentPlayTime - this.lastSaveTime >= this.SAVE_EVERY_SEC && !this.isRecording) {
             this.isRecording = true;
             try {
               await this.updateDuration();
@@ -370,14 +374,20 @@
       }
     },
 
-    updateDuration: async function () {
+    // 再生時間の書き込みは、履歴(最大 1 万件・2MB 余り)をまるごと読んで書き戻す。
+    // 以前は再生中 5 秒ごとに行っていて、Immersion を閉じていても 1 時間に
+    // 数 GB ぶんの読み書きと使い捨てのメモリを生んでいた。30 秒ごとにして、
+    // 曲が変わる時に残りを書く(check)。
+    SAVE_EVERY_SEC: 30,
+
+    updateDuration: async function (videoId = this.currentVideoId, playTime = this.currentPlayTime, lyricLines = this.currentLyricLines) {
       let history = await storage.get(this.HISTORY_KEY) || [];
       if (history.length === 0) return;
 
       const lastIndex = history.length - 1;
-      if (history[lastIndex].id === this.currentVideoId) {
-        history[lastIndex].duration = this.currentPlayTime;
-        history[lastIndex].lyricLines = this.currentLyricLines;
+      if (history[lastIndex].id === videoId) {
+        history[lastIndex].duration = playTime;
+        history[lastIndex].lyricLines = lyricLines;
 
         await storage.set(this.HISTORY_KEY, history);
         if (ui.replayPanel && ui.replayPanel.classList.contains('active')) {
@@ -626,9 +636,9 @@
 
       const footerArea = createEl('div', 'replay-footer-area', 'replay-footer-area');
       footerArea.innerHTML = `
-        <button id="replay-import-btn" class="replay-footer-btn">Restore</button>
-        <button id="replay-export-btn" class="replay-footer-btn">Backup</button>
-        <button id="replay-cloudsync-btn" class="replay-footer-btn">Cloud</button>
+        <button id="replay-import-btn" class="replay-footer-btn" data-ytm-text="replay_restore">${t('replay_restore')}</button>
+        <button id="replay-export-btn" class="replay-footer-btn" data-ytm-text="replay_backup">${t('replay_backup')}</button>
+        <button id="replay-cloudsync-btn" class="replay-footer-btn" data-ytm-text="replay_cloud">${t('replay_cloud')}</button>
         <button id="replay-reset-action" class="replay-footer-btn">${t('settings_reset')}</button>
       `;
       ui.replayPanel.appendChild(footerArea);

@@ -26,8 +26,8 @@ const uiSource = fs.readFileSync(
 
 test('古い画像の読み込みは新しい背景を塗り潰さない', () => {
   const fn = uiSource.slice(
-    uiSource.indexOf('function updateMetaUI(meta) {'),
-    uiSource.indexOf('ui.lyrics.innerHTML', uiSource.indexOf('function updateMetaUI(meta) {')),
+    uiSource.indexOf('function updateArtworkUI(meta) {'),
+    uiSource.indexOf('function updateArtistLink(meta) {'),
   )
   assert.match(fn, /const bgToken = \+\+_bgLoadToken;/)
   assert.match(fn, /if \(bgToken !== _bgLoadToken\) return;/)
