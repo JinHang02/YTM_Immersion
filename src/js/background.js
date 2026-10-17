@@ -390,9 +390,15 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       track_key,
       artist_alt,
       title_full,
+      lookup_video_id,
     } = req.payload || {};
     const tabId = sender && sender.tab ? sender.tab.id : null;
     const resolvedVideoId = video_id || API.extractVideoIdFromUrl(youtube_url) || '';
+    // 動画モードでは、歌詞を MV ではなく音源(曲版)の videoId で引く(lyrics-ui.js の
+    // resolveMovieLookupSong)。resolvedVideoId は「どの動画への答えか」の照合に使うので
+    // MV のまま返し、取得元へ渡す videoId / URL だけ音源に替える。
+    const lookupVideoId = lookup_video_id || resolvedVideoId;
+    const lookupUrl = lookup_video_id ? `https://youtu.be/${lookup_video_id}` : youtube_url;
     const hasTranslateRequest = Array.isArray(translate_to) ? translate_to.length > 0 : !!translate_to;
     const lrchubLyricsMethod = hasTranslateRequest ? 'GET' : 'POST';
     // 「単語同期 優先」。'ytm' / 'lrchub' が「どこに先に聞くか」なのに対し、
@@ -803,8 +809,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
           API.fetchFromLrchub({
             track,
             artist,
-            youtube_url,
-            video_id: resolvedVideoId,
+            youtube_url: lookupUrl,
+            video_id: lookupVideoId,
             offset_ms,
             translate_to,
             translation_source,
@@ -858,10 +864,10 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       // 検索をミラー横断で投げる重い経路で、実測でも3ミラーとも歌詞を
       // 返さない(502 / 429 / 402)。毎曲叩いても得るものが無い。
       let simpMusicSettled = null;
-      const simpMusicRawTask = (sourceOn('simpmusic') && typeof API.fetchFromSimpMusic === 'function' && resolvedVideoId)
+      const simpMusicRawTask = (sourceOn('simpmusic') && typeof API.fetchFromSimpMusic === 'function' && lookupVideoId)
         ? makeRawHubTask(
           'SimpMusic',
-          API.fetchFromSimpMusic({ video_id: resolvedVideoId }),
+          API.fetchFromSimpMusic({ video_id: lookupVideoId }),
           'SimpMusic',
           'simpmusic',
         ).then(result => {
@@ -889,7 +895,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       // よそのサーバーを無駄に叩かないため。ふだんは下のフォールバック段で
       // 初めて起こす。ただし「単語同期 優先」の時だけは、LRCHub が速かった
       // 回でも起こす(行同期で確定させず、単語同期が届いたら差し替えるため)。
-      const extraArgs = { track, artist, album, durationSec: duration_sec, video_id: resolvedVideoId };
+      const extraArgs = { track, artist, album, durationSec: duration_sec, video_id: lookupVideoId };
       const extraTask = (fn, label, providerId) => (
         (Extra.EXTRA_PROVIDERS_ENABLED && typeof fn === 'function')
           ? makeRawHubTask(label, fn(extraArgs), label, providerId)
@@ -955,7 +961,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
         if (getHubLyricsQuality(earlyPrimary.res) < 5) {
           const earlySearchTask = makeRawHubTask(
             HUB_TITLE_SEARCH_SOURCE,
-            API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: resolvedVideoId }),
+            API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: lookupVideoId }),
             'LRCHub search'
           );
           await API.withTimeout(earlySearchTask, 5000, 'lrchub search upgrade').catch(() => null);
@@ -1006,7 +1012,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       const searchRawTask = lrchubOn
         ? makeRawHubTask(
           HUB_TITLE_SEARCH_SOURCE,
-          API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: resolvedVideoId }),
+          API.fetchFromLrchubSearch({ track, artist, artist_alt, title_full, limit: 30, translate_to, video_id: lookupVideoId }),
           'LRCHub search'
         )
         : null;
@@ -1022,8 +1028,8 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
             API.fetchFromLrchub({
               track,
               artist,
-              youtube_url,
-              video_id: resolvedVideoId,
+              youtube_url: lookupUrl,
+              video_id: lookupVideoId,
               offset_ms,
               translate_to,
               translation_source,

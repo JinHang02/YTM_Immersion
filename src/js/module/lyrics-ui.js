@@ -2931,6 +2931,22 @@ const movieToSongTime = (tv, segs) => {
   const time = next ? Math.max(0, next.songStart - 0.01) : last.songStart + last.dur;
   return { time, cut: true, next };
 };
+// 動画モードの歌詞は、MV ではなく音源(曲版)で引く。歌詞サーバーに MV の videoId と
+// MV の長さを送ると、長さで照合する取得元は「歌詞が曲の長さに足りない」と弾き、
+// videoId で引く取得元は MV の登録が無くて外れ、曲モードより同期歌詞がずっと少なかった。
+// 音源の時刻の歌詞は上の対応表で MV の時刻に直して出すので、表がある時だけ寄せる
+// (表が無いと音源の時刻のまま MV に当たってずれる)。返すのは { videoId, title, durationSec }。
+const MOVIE_SONG_WAIT_MS = 1500;
+const isMoviePlaybackNow = () => moviemode === true
+  || document.querySelector('ytmusic-av-toggle')?.getAttribute('playback-mode') === 'OMV_PREFERRED';
+const resolveMovieLookupSong = async (videoId) => {
+  if (!videoId || typeof YTMSegmentMap === 'undefined' || !YTMSegmentMap.song || !isMoviePlaybackNow()) return null;
+  const song = await Promise.race([
+    YTMSegmentMap.song(videoId).catch(() => null),
+    new Promise(resolve => setTimeout(() => resolve(null), MOVIE_SONG_WAIT_MS)),
+  ]);
+  return song && YTMSegmentMap.peek(videoId) ? song : null;
+};
 // 音源の時刻 → MV の時刻(歌詞の行を押してシークする時)
 const songToMovieTime = (ts, segs) => {
   let best = segs[0];
@@ -5917,23 +5933,25 @@ async function findAlternateLyricSources() {
   );
   if (currentLyricsSource) known.add(currentLyricsSource);
 
-  const videoEl = document.querySelector('video');
-  const durationSec = (videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0)
-    ? Math.round(videoEl.duration)
-    : null;
-
   alternateLookupInFlight = true;
   showToast('他の取得元を探しています...');
   try {
+    // 動画モードでは音源で引く(GET_LYRICS と同じ。resolveMovieLookupSong)
+    const movieSong = await resolveMovieLookupSong(requestVideoId);
+    const videoEl = document.querySelector('video');
+    const durationSec = (movieSong && movieSong.durationSec)
+      || ((videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0)
+        ? Math.round(videoEl.duration)
+        : null);
     const res = await safeRuntimeSendMessage({
       type: 'FIND_ALTERNATE_LYRICS',
       payload: {
-        track: meta.title,
+        track: (movieSong && movieSong.title) || meta.title,
         artist: meta.artist || '',
         album: meta.album || '',
         duration_sec: durationSec,
-        youtube_url: getCurrentVideoUrl(),
-        video_id: requestVideoId,
+        youtube_url: movieSong ? `https://youtu.be/${movieSong.videoId}` : getCurrentVideoUrl(),
+        video_id: movieSong ? movieSong.videoId : requestVideoId,
         exclude: [...known],
       },
     });
@@ -8431,16 +8449,23 @@ async function loadLyrics(meta, options = {}) {
   let gotLyrics = false;
   try {
     const artist = meta.artist;
-    const track = normalizeSearchTrackTitle(meta.title, artist);
     const youtube_url = getCurrentVideoUrl();
     const video_id = requestVideoId;
     const translate_to = getRequestedLrchubTranslateLangs();
+    // 動画モードでは音源の曲名・長さ・videoId で引く(resolveMovieLookupSong)。
+    // video_id は「どの動画への答えか」の照合に使うので MV のまま送り、
+    // 引く先だけ lookup_video_id で渡す。
+    const movieSong = await resolveMovieLookupSong(video_id);
+    if (movieSong) YTMLog.log(`[CS] 動画モード: 歌詞は音源 ${movieSong.videoId} で引く`);
+    const lookupTitle = (movieSong && movieSong.title) || meta.title;
+    const track = normalizeSearchTrackTitle(lookupTitle, artist);
     // LyricsPlus はアルバム名と尺で候補を絞る。無ければ無いで動くが、
     // 同名異曲・別リリースを掴む確率がはっきり下がる。
     const videoEl = document.querySelector('video');
-    const durationSec = (videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0)
-      ? Math.round(videoEl.duration)
-      : null;
+    const durationSec = (movieSong && movieSong.durationSec)
+      || ((videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0)
+        ? Math.round(videoEl.duration)
+        : null);
     const payload = {
       track,
       artist,
@@ -8455,8 +8480,9 @@ async function loadLyrics(meta, options = {}) {
       // LRCHub の曲名検索が 0 件だった時の引き直し用(readShownArtistVariant)。
       // 引き直しで採るのは曲名が title_full と同じレコードだけ
       artist_alt: readShownArtistVariant(meta),
-      title_full: meta.title || '',
+      title_full: lookupTitle || '',
     };
+    if (movieSong) payload.lookup_video_id = movieSong.videoId;
     if (translate_to.length) payload.translate_to = translate_to;
 
     // YouTube Music の行同期歌詞は content script からしか取れない

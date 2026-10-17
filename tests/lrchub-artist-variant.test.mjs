@@ -135,7 +135,9 @@ test('画面の表記は、同じ曲で片方だけが日本語などの時だ�
 })
 
 test('LRCHub の曲名検索にだけ渡す(他の取得元・キャッシュのキーは今までどおり)', () => {
-  assert.match(uiSource, /artist_alt: readShownArtistVariant\(meta\),\s*title_full: meta\.title \|\| '',/)
+  // 曲名は MediaSession のまま(動画モードで音源が分かった時だけ音源の曲名。movie-song-lookup.test.mjs)
+  assert.match(uiSource, /const lookupTitle = \(movieSong && movieSong\.title\) \|\| meta\.title;/)
+  assert.match(uiSource, /artist_alt: readShownArtistVariant\(meta\),\s*title_full: lookupTitle \|\| '',/)
   // キャッシュのキーは MediaSession のまま
   assert.match(uiSource, /const thisKey = `\$\{meta\.title\}\/\/\/\$\{meta\.artist\}`;/)
   const code = bgSource.split('\n').filter(line => !line.includes('YTMLog.')).join('\n')

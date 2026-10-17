@@ -360,31 +360,74 @@
     return out.length ? out : null;
   };
 
+  // ■ MV に対応する音源(曲版)
+  //   動画モードでも歌詞は音源の時刻で引いて、対応表で MV の時刻に直す。
+  //   ところが歌詞サーバーへは MV の videoId と MV の長さを送っていたので、
+  //   長さで照合する取得元(LrcLib・LyricsPlus・BuaaaBot・LiriQo 等)が
+  //   「歌詞が曲の長さに足りない」と弾き、videoId で引く取得元(LRCHub・SimpMusic)は
+  //   MV の登録が無くて外れていた。動画モードで同期歌詞が曲モードより少なかった原因。
+  //   counterpart が音源(ATV)なら、その videoId・曲名・長さを返す。
+  //   musicVideoType の読み方は YT-Immersion の music_resolver.js と同じ。
+  const runsText = (t) => ((t && t.runs) || []).map(r => r.text).join('');
+  const parseLengthText = (s) => {
+    const parts = String(s || '').trim().split(':').map(Number);
+    if (!parts.length || parts.some(n => !Number.isFinite(n))) return 0;
+    return parts.reduce((a, n) => a * 60 + n, 0);
+  };
+  const musicVideoTypeOf = (item) => (
+    (JSON.stringify(item || {}).match(/"musicVideoType":"MUSIC_VIDEO_TYPE_(\w+)"/) || [])[1] || ''
+  );
+  const readSongCounterpart = (nextRes, videoId) => {
+    const wrapper = readQueueHead(nextRes)?.playlistPanelVideoWrapperRenderer;
+    const primary = wrapper?.primaryRenderer?.playlistPanelVideoRenderer;
+    const song = wrapper?.counterpart?.[0]?.counterpartRenderer?.playlistPanelVideoRenderer;
+    if (!primary || !song || primary.videoId !== videoId || !song.videoId || song.videoId === videoId) return null;
+    // 問い合わせた側が音源なら、もう片方は MV。音源へ寄せる必要が無い
+    if (musicVideoTypeOf(primary) === 'ATV' || musicVideoTypeOf(song) !== 'ATV') return null;
+    const durationSec = parseLengthText(runsText(song.lengthText));
+    return {
+      videoId: song.videoId,
+      title: runsText(song.title),
+      durationSec: durationSec > 0 ? durationSec : null,
+    };
+  };
+
   // 対応表の控え。歌詞の取得(tryFetch)でついでに取れた分も入れる。
   // 値: 区間の配列 / null(対応表が無い) 。未取得は has で見分ける。
+  // 音源の控え(songCache)も同じ応答から取り、同じ時に入れる。
   const SEGMENT_CACHE_LIMIT = 50;
   const segmentCache = new Map();
+  const songCache = new Map();
   const segmentPending = new Map();
   const rememberSegments = (videoId, nextRes) => {
     if (!videoId || !nextRes) return;
-    if (segmentCache.size >= SEGMENT_CACHE_LIMIT) segmentCache.delete(segmentCache.keys().next().value);
+    if (segmentCache.size >= SEGMENT_CACHE_LIMIT) {
+      const oldest = segmentCache.keys().next().value;
+      segmentCache.delete(oldest);
+      songCache.delete(oldest);
+    }
     segmentCache.set(videoId, readSegmentInfo(nextRes, videoId));
+    songCache.set(videoId, readSongCounterpart(nextRes, videoId));
+  };
+  const fetchSegments = (videoId) => {
+    if (!videoId) return Promise.resolve(null);
+    if (segmentCache.has(videoId)) return Promise.resolve(segmentCache.get(videoId));
+    if (segmentPending.has(videoId)) return segmentPending.get(videoId);
+    const job = post('next', CLIENT_WEB, { videoId })
+      .then((res) => { rememberSegments(videoId, res); return segmentCache.get(videoId) ?? null; })
+      .catch(() => null)
+      .finally(() => segmentPending.delete(videoId));
+    segmentPending.set(videoId, job);
+    return job;
   };
   globalThis.YTMSegmentMap = {
     // 取得済みなら区間の配列か null、まだなら undefined
     peek: (videoId) => (segmentCache.has(videoId) ? segmentCache.get(videoId) : undefined),
-    fetch: (videoId) => {
-      if (!videoId) return Promise.resolve(null);
-      if (segmentCache.has(videoId)) return Promise.resolve(segmentCache.get(videoId));
-      if (segmentPending.has(videoId)) return segmentPending.get(videoId);
-      const job = post('next', CLIENT_WEB, { videoId })
-        .then((res) => { rememberSegments(videoId, res); return segmentCache.get(videoId) ?? null; })
-        .catch(() => null)
-        .finally(() => segmentPending.delete(videoId));
-      segmentPending.set(videoId, job);
-      return job;
-    },
+    fetch: fetchSegments,
+    // MV の videoId → 音源の { videoId, title, durationSec }。音源が無い・既に音源なら null
+    song: (videoId) => fetchSegments(videoId).then(() => songCache.get(videoId) ?? null),
     _readSegmentInfo: readSegmentInfo,
+    _readSongCounterpart: readSongCounterpart,
   };
 
   // next 応答に入っているキュー全体を読む。
