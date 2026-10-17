@@ -56,5 +56,9 @@ test('バーが隠れている間は、バーのための余白を取らない(�
   // 動画モード: YT-Immersion と同じ位置(曲名 下 80px・歌詞 下 60px・高さ 40vh)に、バーの分の持ち上げを足す
   assert.match(css, /bottom: calc\(80px \+ var\(--ytm-movie-bar-lift, 0px\)\);/)
   assert.match(css, /bottom: calc\(60px \+ var\(--ytm-movie-bar-lift, 0px\)\);\s*height: 40vh;/)
-  assert.match(css, /#ytm-custom-wrapper:has\(#ytm-custom-title\.inactive\),[\s\S]{0,120}\{\s*--ytm-movie-bar-lift: 0px;/)
+  // 曲名が隠れている間は JS が器に ytm-title-inactive を付ける。:has() で見ると、
+  // 器の中のスタイルが変わるたび(文字同期の塗りは毎フレーム)に器・BODY・HTML まで
+  // 計算し直しになる
+  assert.match(css, /#ytm-custom-wrapper\.ytm-title-inactive,[\s\S]{0,120}\{\s*--ytm-movie-bar-lift: 0px;/)
+  assert.doesNotMatch(css, /:has\(#ytm-custom-title\.inactive\)/)
 })

@@ -33,7 +33,7 @@ function sourceBetween(source, startMarker, endMarker) {
 
 const painterSource = sourceBetween(
   lyricsUiSource,
-  '// 塗りの境目のぼかし半幅(文字サイズ基準)',
+  '// 塗りの境目のぼかし半幅(px)',
   '// ── 従来式(1文字ずつ点灯)の表示',
 )
 
@@ -181,10 +181,30 @@ test('a word ends when the next glyph starts, not when the next word starts', ()
 
 // ── 行を流れる1本の先端 ──────────────────────────────────
 
+// 光の層(.lyric-glow)用の、最小限の要素
+function makeChildEl() {
+  const classes = new Set()
+  return {
+    dataset: {},
+    attrs: {},
+    style: {},
+    setAttribute(k, v) { this.attrs[k] = v },
+    classList: { add: c => classes.add(c), contains: c => classes.has(c) },
+    set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => classes.add(c)) },
+    get className() { return [...classes].join(' ') },
+  }
+}
+
 function makeSpan(text, times, offsets) {
   const style = {}
   const animateCalls = []
+  const classes = new Set()
+  const children = []
   return {
+    children,
+    classList: { add: c => classes.add(c), contains: c => classes.has(c) },
+    appendChild(el) { children.push(el); return el },
+    ownerDocument: { createElement: () => makeChildEl() },
     animateCalls,
     animate(frames, options) {
       const animation = {
@@ -236,8 +256,8 @@ test('the fill front is one continuous position for the whole line', () => {
   const row = makeRow([a, b])
   measureLyricLineSweep(row)
 
-  assert.equal(a.props['--wx'], '0')
-  assert.equal(b.props['--wx'], '30')
+  assert.equal(a._wx, 0)
+  assert.equal(b._wx, 30)
 
   // 時間が進むほど前へしか動かない
   let prev = -1
@@ -271,8 +291,8 @@ test('a wrapped line is laid out as one reading path', () => {
   measureLyricLineSweep(row)
   // 2行目の語は1行目の右へ続いた座標になる。0 のままだと
   // 折り返した瞬間に先端が左へ飛ぶ。
-  assert.equal(a.props['--wx'], '0')
-  assert.equal(b.props['--wx'], '20')
+  assert.equal(a._wx, 0)
+  assert.equal(b._wx, 20)
   assert.ok(lyricSweepAt(row, 1.2) > 20)
 })
 
@@ -400,33 +420,88 @@ test('emphasis begins before the syllable is actually sung', () => {
 
 test('the glow radius is fixed per word so only its alpha animates', () => {
   // 半径を毎フレーム変えると、そのたびに字の影を描き直すことになる。
-  const { measureLyricLineSweep } = loadPainter()
+  // 影は光の層に一度だけ書き、毎フレーム変えるのは opacity だけ。
+  const { measureLyricLineSweep, paintLyricWordRow } = loadPainter()
   const a = makeSpan('aaaa', [0, 1, 2, 3])
   a._end = 4
   const row = makeRow([a])
   measureLyricLineSweep(row)
-  assert.ok(Number(a.props['--wglowr']) > 0)
-  assert.ok(Number(a.props['--wglowr']) <= 0.3)
-  assert.ok(Number(a.props['--wglowa']) > 0)
+  const glow = a._glowEl
+  assert.ok(glow, 'a long note gets a glow layer')
+  assert.equal(glow.className, 'lyric-glow')
+  assert.equal(glow.dataset.t, 'aaaa', 'the layer shows the same text through ::before')
+  assert.equal(a.children.length, 1, 'the text itself is not duplicated into the DOM')
+  const m = glow.style.textShadow.match(/^0 0 ([\d.]+)em color-mix\(in srgb, color-mix\(in srgb, currentColor 55%, #fff\) ([\d.]+)%, transparent\)$/)
+  assert.ok(m, `unexpected glow shadow: ${glow.style.textShadow}`)
+  assert.ok(Number(m[1]) > 0 && Number(m[1]) <= 0.3)
+  assert.ok(Number(m[2]) > 0)
+  const shadow = glow.style.textShadow
+  paintLyricWordRow(row, 1.5)
+  paintLyricWordRow(row, 2.0)
+  assert.equal(glow.style.textShadow, shadow, 'the shadow must not change per frame')
+  assert.ok(Number(glow.style.opacity) > 0, 'the strength goes through opacity')
+  assert.ok(!('--wg' in a.props), 'no per-frame custom property for the glow')
+
+  // 測り直しても(窓の大きさが変わった・PIP の複製)層は増やさない
+  row._sweepReady = false
+  measureLyricLineSweep(row)
+  assert.equal(a.children.length, 1)
+  assert.equal(a._glowEl, glow)
 })
 
 // ── 毎フレームの書き込み ────────────────────────────────
 
-test('the fill costs one style write per line, not one per word', () => {
+test('each frame only rewrites the word under the front, and never the line', () => {
+  // 行に受け継ぐ変数(--sweep)を書くと、行の中の全部の語を計算し直し、
+  // YTM のページが受け継がせてくる 1,500 個ほどの CSS 変数の表まで毎回作り直す。
+  // 語の外では先端の位置で見た目が変わらないので、値を止めておけば
+  // 書き換わるのは先端がいる語だけになる。
   const { measureLyricLineSweep, paintLyricWordRow } = loadPainter()
   const spans = ['aa', 'bb', 'cc', 'dd'].map((txt, i) => {
     const sp = makeSpan(txt, [i * 0.3, i * 0.3 + 0.15])
     sp.offsetLeft = i * 25
+    sp._end = i * 0.3 + 0.3
     return sp
   })
   const row = makeRow(spans)
   measureLyricLineSweep(row)
   row._sweepReady = true
-  const before = row.writeCount
-  paintLyricWordRow(row, 0.42)
-  const sweepWrites = row.writeCount - before
-  assert.equal(sweepWrites, 1)
-  assert.ok('--sweep' in row.props)
+  const rowWritesBefore = row.writeCount
+  let writes = 0
+  for (const sp of spans) {
+    const set = sp.style.setProperty
+    sp.style.setProperty = (k, v) => { if (k === '--wsweep') writes += 1; set(k, v) }
+  }
+  paintLyricWordRow(row, 0.42)   // 最初の 1 枚は全部の語に書く
+  writes = 0
+  paintLyricWordRow(row, 0.44)
+  paintLyricWordRow(row, 0.46)
+  assert.ok(writes <= 4, `only the word under the front should change (${writes} writes in 2 frames)`)
+  assert.ok(writes >= 1, 'the word under the front must still move')
+  assert.equal(row.writeCount, rowWritesBefore, 'the line itself must not be written per frame')
+  // 塗り終えた語・まだの語は語の外で止まっている
+  assert.equal(Number(spans[0].props['--wsweep']), 20 + 10, 'a finished word stays at width + feather')
+  assert.equal(Number(spans[3].props['--wsweep']), -10, 'a word ahead stays at -feather')
+})
+
+test('the clamped fill looks the same as the unclamped one', () => {
+  // 止めた範囲の外では、勾配の 2 つの停止位置がどちらも語の箱の外に出る
+  // (全部塗れている / 全部まだ)。止めても見え方が変わらないことを式で確かめる。
+  const feather = 10
+  const width = 40
+  const colorAt = (local, x) => {
+    const a = local - feather
+    const b = local + feather
+    if (x <= a) return 1
+    if (x >= b) return 0
+    return 1 - (x - a) / (b - a)
+  }
+  const clamp = (v) => Math.min(Math.max(v, -feather), width + feather)
+  for (const local of [-500, -30, -10.5, -10, 0, 5, 39, 50, 50.5, 80, 900]) {
+    for (let x = 0; x <= width; x += 0.5) {
+      assert.ok(Math.abs(colorAt(local, x) - colorAt(clamp(local), x)) < 1e-9, `local=${local} x=${x}`)
+    }
+  }
 })
 
 test('a settled word stops being written to every frame', () => {
@@ -453,7 +528,8 @@ test('words that do not qualify for emphasis are never given a glow value', () =
   measureLyricLineSweep(row)
   a._emp = false
   paintLyricWordRow(row, 0.06)
-  assert.ok(!('--wg' in a.props), 'a fast syllable must cost nothing extra')
+  assert.ok(!a._glowEl, 'a fast syllable gets no glow layer')
+  assert.equal(a._wg, undefined, 'a fast syllable must cost nothing extra')
 })
 
 test('the motion is handed to the browser instead of written every frame', () => {
@@ -594,7 +670,7 @@ test('a line going inactive rewinds its motion', () => {
   resetLyricWordRow(row)
   assert.equal(animation.currentTime, 0)
   assert.equal(animation.playState, 'paused')
-  assert.equal(Number(row.props['--sweep']), 0)
+  assert.equal(Number(a.props['--wsweep']), 0)
 })
 
 // ── 設定と CSS ───// ── 設定と CSS ───────────────────────────────────────────
@@ -641,8 +717,8 @@ test('the fill is positioned in absolute px from a line-wide front', () => {
     '\n}',
   )
   const stops = rule.match(/linear-gradient\([\s\S]*?\);/)[0]
-  assert.match(stops, /calc\(\(var\(--sweep\) - var\(--wx\) - var\(--feather\)\) \* 1px\)/)
-  assert.match(stops, /calc\(\(var\(--sweep\) - var\(--wx\) \+ var\(--feather\)\) \* 1px\)/)
+  assert.match(stops, /calc\(\(var\(--wsweep\) - var\(--feather\)\) \* 1px\)/)
+  assert.match(stops, /calc\(\(var\(--wsweep\) \+ var\(--feather\)\) \* 1px\)/)
 })
 
 test('the fill never sizes or positions its background image', () => {
@@ -670,9 +746,16 @@ test('the fill never sizes or positions its background image', () => {
 test('the soft edge stays narrower than a full-width character', () => {
   // ぼかしが 1em を超えると、先端が字を横切らずに字が丸ごとフェードイン
   // する。それが1文字ずつ順に起きて、かくんかくんと点いて見える。
-  const feather = Number(lyricsUiSource.match(/const WORD_FEATHER_EM = ([\d.]+);/)[1])
-  assert.ok(feather * 2 < 1, `the ramp is ${feather * 2}em, wider than a CJK glyph`)
-  assert.ok(feather * 2 > 0.3, 'too narrow reads as a hard edge')
+  // 歌詞の字は 100% の UI で 32px(.lyric-line)。ぼかしの幅(半幅の 2 倍)はそれより狭く。
+  const feather = Number(lyricsUiSource.match(/const SWEEP_FEATHER_PX = ([\d.]+);/)[1])
+  assert.ok(feather * 2 < 32, `the ramp is ${feather * 2}px, wider than a CJK glyph`)
+  assert.ok(feather * 2 > 8, 'too narrow reads as a hard edge')
+  // JS が値を止める範囲と CSS のぼかし半幅が同じであること(ずれると端で色が跳ぶ)
+  for (const [name, src] of [['main', styleSource], ['PIP', pipSource]]) {
+    const m = src.replace(/\s+/g, ' ').match(/@property --feather \{[^}]*initial-value: ([\d.]+);/)
+    assert.ok(m, `${name}: --feather must be registered`)
+    assert.equal(Number(m[1]), feather, `${name}: CSS feather differs from SWEEP_FEATHER_PX`)
+  }
 })
 
 test('the word styling only applies to a line that has word timing', () => {

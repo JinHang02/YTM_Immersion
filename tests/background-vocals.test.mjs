@@ -157,7 +157,10 @@ test('画面: 本編の下に出し、塗りは本編と別に走らせ、行は
   // 止める位置はハモリを除いた高さで決める(その行だけずれない)
   assert.match(ui, /lyricAnchorOffset\(container, lyricRowAnchorHeight\(r, rRect\)\)/)
   assert.match(ui, /\(lyricRowAnchorHeight\(r, rRect\) \/ 2\)/)
-  assert.match(css, /\.lyric-bg\.ytm-bg-sync \{[^}]*--sweep: 0;/)
+  // ハモリも 1 本の行として測り直す(塗りの先端はハモリ自身のもの)
+  assert.match(ui, /querySelectorAll\('\.lyric-line\.ytm-word-sync, \.lyric-bg\.ytm-bg-sync'\)/)
+  // 行に受け継ぐ変数(--sweep)を毎フレーム書く作りには戻さない(毎分 1GB 近いゴミが出ていた)
+  assert.doesNotMatch(css.replace(/\/\*[\s\S]*?\*\//g, ''), /--sweep/)
 })
 
 test('まとまりの端の空白は inline-block の外に出す(語の間が詰まって見える)', () => {
@@ -194,5 +197,5 @@ test('PIP にもハモリのスタイルがある(本体の CSS を読まない�
   const pip = fs.readFileSync(new URL('../src/js/module/pip-manager.js', import.meta.url), 'utf8')
   assert.match(pip, /\.lyric-bg \{[^}]*font-size: 0\.6em;[^}]*max-height: 0;[^}]*opacity: 0;/)
   assert.match(pip, /\.lyric-line\.active \.lyric-bg \{[^}]*max-height: 6em;/)
-  assert.match(pip, /\.lyric-bg\.ytm-bg-sync \{ --sweep: 0;/)
+  assert.doesNotMatch(pip.replace(/\/\*[\s\S]*?\*\//g, ''), /--sweep/)
 })

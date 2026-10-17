@@ -68,12 +68,16 @@ test('動画モードの今の行は曲名と同じ真っ白', () => {
   assert.match(css, /\.lyric-line\.active\.moviemode \{\s*color: #fff;\s*\}/)
 })
 
-test('語の塗り(--sweep)はアニメーションにせずループで書く。回数は曲 60・動画 30 まで', () => {
+test('語の塗りはアニメーションにせずループで書く。回数は曲 60・動画 30 まで', () => {
   // CSS 変数のアニメーションは合成側で走れず、画面の書き換え回数(120Hz なら 120 回)だけ
   // メインスレッドで動く
   assert.doesNotMatch(ui, /'--sweep': xs\[i\]/)
   assert.doesNotMatch(ui, /_sweepAnimated/)
-  assert.match(ui, /writeLyricVar\(row, '--sweep', '_sweep', lyricSweepAt\(row, t\), SWEEP_STEP\);/)
+  assert.match(ui, /const sweep = lyricSweepAt\(row, t\);\s*for \(let i = 0; i < spans\.length; i\+\+\) writeLyricWordSweep\(spans\[i\], sweep\);/)
+  // 行に受け継ぐ変数を書かない(行の中の全部の語と、YTM の 1,500 個ほどの CSS 変数の表を
+  // 毎回作り直すことになる)
+  assert.doesNotMatch(ui, /writeLyricVar\(row, '--sweep'/)
+  assert.match(ui, /writeLyricVar\(span, '--wsweep', '_wsweep', local, SWEEP_STEP\);/)
   assert.match(ui, /const frameMs = moviemode === true \? LYRIC_MOVIE_FRAME_MS : LYRIC_FRAME_MS;/)
   assert.match(ui, /const LYRIC_FRAME_MS = 1000 \/ 60;/)
   assert.match(ui, /const LYRIC_MOVIE_FRAME_MS = 1000 \/ 30;/)

@@ -223,19 +223,20 @@ const forceStyle = pipDoc.createElement('style');
         /* ── Apple Music 風の同期表示（PIP 版）──────────────
            PIP は別文書で、本体の style.css を読んでいない。
            意味は src/css/style.css の同名ブロックと同じ:
-             行に --sweep (先頭から進んだ px) と --feather (ぼかし半幅 px)
-             語に --wx (語の開始位置 px) / --wg / --wglowa / --wglowr
+             語に --wsweep (語の左端から塗りの先端までの px)
+             光る語の中の .lyric-glow に光の影と濃さ(opacity)
+           毎フレーム書く変数は inherits: false(本体側の注釈を参照)。
            持ち上がりと膨らみは Web Animations 側(lyrics-ui.js)。
            両方を直す時は必ず片方だけにならないようにすること。
            片方だけ直っていないことを tests/lyrics-apple-sync.test.mjs が見ている。 */
-        @property --sweep { syntax: '<number>'; inherits: true; initial-value: 0; }
-        .lyric-line.ytm-word-sync { --feather: 10; --ytm-rest-alpha: 0.26; }
+        @property --wsweep { syntax: '<number>'; inherits: false; initial-value: 0; }
+        @property --feather { syntax: '<number>'; inherits: false; initial-value: 10; }
+        .lyric-line.ytm-word-sync { --ytm-rest-alpha: 0.26; }
         .lyric-line.ytm-word-sync.active { --ytm-rest-alpha: 0.4; }
         /* 下の .lyric-phrase(margin: 0 1px !important)に負けないよう !important。
            負けると引用符などの独立したまとまりの前後に隙間が出る(本体は 0) */
         .lyric-phrase.lyric-phrase-sync { margin: 0 !important; }
         .lyric-line.ytm-word-sync .lyric-word {
-          --wx: 0; --feather: 10; --wg: 0; --wglowa: 0; --wglowr: 0;
           display: inline-block;
           white-space: pre;
           /* transform は Web Animations が合成側で動かす(本体と同じ) */
@@ -246,18 +247,31 @@ const forceStyle = pipDoc.createElement('style');
           /* background-size / background-position は使わないこと。
              画像からはみ出した語が透明になって消える(本体側の注釈を参照)。 */
           background-image: linear-gradient(90deg,
-              currentColor calc((var(--sweep) - var(--wx) - var(--feather)) * 1px),
+              currentColor calc((var(--wsweep) - var(--feather)) * 1px),
               color-mix(in srgb, currentColor calc(var(--ytm-rest-alpha) * 100%), transparent)
-                calc((var(--sweep) - var(--wx) + var(--feather)) * 1px));
+                calc((var(--wsweep) + var(--feather)) * 1px));
           background-repeat: no-repeat;
           -webkit-background-clip: text;
           background-clip: text;
           -webkit-text-fill-color: transparent;
-          text-shadow: 0 0 calc(var(--wglowr) * 1em)
-            color-mix(in srgb,
-              color-mix(in srgb, currentColor 55%, #fff)
-              calc(var(--wg) * var(--wglowa) * 100%), transparent) !important;
+          text-shadow: none !important;
         }
+        /* 光(本体の .lyric-glow と同じ)。影は語ごとに一度だけ JS が書き、濃さは opacity */
+        .lyric-line.ytm-word-sync .lyric-word.lyric-word-glow { position: relative; }
+        .lyric-line.ytm-word-sync .lyric-glow {
+          display: none;
+          position: absolute;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          font-style: inherit;
+          -webkit-text-fill-color: transparent;
+          pointer-events: none;
+          user-select: none;
+          opacity: 0;
+        }
+        .lyric-line.ytm-word-sync.active .lyric-glow { display: block; will-change: opacity; }
+        .lyric-line.ytm-word-sync .lyric-glow::before { content: attr(data-t); }
         .lyric-line.ytm-word-sync:not(.active) .lyric-word {
           background-image: none;
           -webkit-text-fill-color: currentColor;
@@ -267,7 +281,7 @@ const forceStyle = pipDoc.createElement('style');
         /* ハモリ(バックボーカル)。本体の style.css の .lyric-bg と同じ。
            PIP は本体の CSS を読まないので、ここに無いと本編と同じ大きさで
            本編の直後に並んでしまう(v2.4.0 の不具合)。ふだんは畳み、行が
-           光ったら開く。塗りはハモリ自身の --sweep で走らせる。 */
+           光ったら開く。塗りはハモリ自身の先端で走らせる。 */
         .lyric-bg {
           display: block;
           font-size: 0.6em;
@@ -292,7 +306,6 @@ const forceStyle = pipDoc.createElement('style');
           transform: none;
         }
         .lyric-line.sub-vocal .lyric-bg { text-align: right; }
-        .lyric-bg.ytm-bg-sync { --sweep: 0; --feather: 8; }
 
         /* 試作: 韓国語の読み(korean-ruby.js)。本体の style.css と同じ。
            data-ruby は読みを出す設定の時にしか付かないので、入り切りは見ない。 */

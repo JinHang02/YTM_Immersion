@@ -221,8 +221,12 @@ body.ytm-custom-layout #ytm-custom-wrapper {
 }
 
 /* 閲覧ページの上で開いた時(ボタン・ツールバーのアイコン・ショートカット)、
-   下のページのスクロールバーが右端に透けて見えないようにする */
-html:has(> body.ytm-custom-layout) {
+   下のページのスクロールバーが右端に透けて見えないようにする。
+   クラスは JS が body の ytm-custom-layout と一緒に付ける(applyImmersionShown)。
+   :has() で見てはいけない: 中のどこかのスタイルが変わるたびに HTML ごと
+   計算し直しになり、文字同期(語の塗りを毎フレーム書く)では毎分 1GB 近い
+   ゴミが出ていた(2026-10 実測)。 */
+html.ytm-custom-layout-root {
   scrollbar-width: none;
 }
 
@@ -2149,7 +2153,7 @@ body.ytm-custom-layout #my-lyrics-container .lyric-line.lyric-completed {
 
 /* ハモリ(バックボーカル)。本編の下に小さく薄く出す(lyrics-ui.js の
    buildLyricBackgroundRow)。印の付いた歌詞(Apple Music 由来)だけに出る。
-   文字同期では本編と同じ塗りを、ハモリ自身の --sweep で走らせる。
+   文字同期では本編と同じ塗りを、ハモリ自身の先端で走らせる。
    語の作り(.lyric-word)は本編と同じなので、塗りの指定もそのまま効く。
 
    Apple Music と同じく、ふだんは畳んでおき、その行が光った時に下へ
@@ -2186,11 +2190,6 @@ body.ytm-custom-layout #my-lyrics-container .lyric-line.lyric-completed {
   text-align: right;
 }
 
-body.ytm-custom-layout.ytm-apple-sync .lyric-line .lyric-bg.ytm-bg-sync {
-  --sweep: 0;
-  --feather: 8;
-}
-
 /* タイ?スタンプ有り時の翻訳アニメ */
 body.ytm-custom-layout.ytm-has-timestamp .lyric-line .lyric-translation {
   opacity: 0;
@@ -2223,34 +2222,43 @@ body.ytm-custom-layout .lyric-line.active .lyric-char.char-active {
 }
 
 /* ── Apple Music 風の同期表示 ──────────────────────────────
-   JS が渡すもの:
-     行に  --sweep   行の先頭から塗りが進んだ px
-           --feather 塗りの境目のぼかし半幅 px
-     語に  --wx      その語が行の先頭から何 px 目に始まるか (一度だけ)
-           --wg      光の強さ 0〜1  ※伸ばした音だけ
-           --wglowa  その語の光の最大の濃さ   ※一度だけ
-           --wglowr  その語の光の半径(em)     ※一度だけ
+   JS が渡すもの(lyrics-ui.js の paintLyricWordRow):
+     語に  --wsweep  語の左端から塗りの先端までの px
+                     (行を流れる 1 本の先端 − その語の開始位置)
+     光る語(伸ばした音)の中の .lyric-glow に、光の影(一度だけ)と濃さ(opacity)
    持ち上がりと膨らみ(transform)はここには無い。Web Animations で
    合成側に投げている(lyrics-ui.js の createLyricWordMotion)。
 
    塗りを語ごとの 0→1 ではなく「行を流れる1本の先端」として持つのが要点。
    語ごとに勾配を閉じると、語の変わり目でぼかしが途切れて境目が見える。
+   先端の位置は JS が語ごとに引き算して渡す。語の外(語の幅 ± ぼかし半幅の外)
+   では見た目が変わらないので値を止めてあり、毎フレーム書き換わるのは
+   先端がいる語だけになる。
+
+   毎フレーム書く変数は inherits: false にしておくこと。以前は行に
+   --sweep(inherits: true)を書いていて、そのたびに行の中の全部の語を
+   計算し直していた。しかも YTM のページは CSS 変数を 1,500 個ほど
+   受け継がせてくるので、受け継ぐ変数を書き換えると 1 回ごとにその表を
+   作り直すことになり、毎分 1GB 近いゴミが出ていた(2026-10 実測)。
+   語に置く変数も同じ理由で inherits: false。
 
    text-fill-color を透明にしているのは、color を透明にすると currentColor
    まで透明になり、歌い手ごとの色分け(data-singer-color)が丸ごと死ぬため。 */
-
-/* --sweep は Web Animations で動かすので、型を宣言して補間できるように
-   しておく。宣言しないと、値を差し替えるたびにトークンを解釈し直す
-   ことになって余計に重い。 */
-@property --sweep {
+@property --wsweep {
   syntax: '<number>';
-  inherits: true;
+  inherits: false;
   initial-value: 0;
 }
 
+/* 塗りの境目のぼかし半幅 px。JS の SWEEP_FEATHER_PX と同じ値にすること
+   (語の外で値を止める範囲に使う)。 */
+@property --feather {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 10;
+}
+
 body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync {
-  --sweep: 0;
-  --feather: 10;
   /* まだ歌っていない字の濃さ。行が主役になった時だけ少し上げて、
      この先の歌詞を読み進められるようにする。 */
   /* ここを時間で変化させると、そのあいだグラデーションが作り直され続ける。
@@ -2270,12 +2278,6 @@ body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync.active {
 }
 
 body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync .lyric-word {
-  --wx: 0;
-  --feather: 10;
-  --wg: 0;
-  --wglowa: 0;
-  --wglowr: 0;
-
   /* 語の中は1つのテキストとして組ませる。1文字ずつ span に切ると
      カーニングが効かず、字の間に隙間が出る。 */
   display: inline-block;
@@ -2294,7 +2296,7 @@ body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync .lyric-word {
   transition: none;
 }
 
-/* 塗り。行を流れる先端(--sweep)から自分の開始位置(--wx)を引いた所に
+/* 塗り。行を流れる先端から自分の開始位置を引いた所(--wsweep)に
    境目が来る。px 指定なので、語をまたいでもぼかし幅が変わらない。 */
 body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync.active .lyric-word {
   /* 停止位置だけを px で動かし、画像の大きさと位置は既定のまま
@@ -2311,29 +2313,59 @@ body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync.active .lyric-wo
      毎フレーム作り直すことにはなるが、84語で 0.1ms/フレームしか
      かからないことを実測してある。 */
   background-image: linear-gradient(90deg,
-      currentColor calc((var(--sweep) - var(--wx) - var(--feather)) * 1px),
+      currentColor calc((var(--wsweep) - var(--feather)) * 1px),
       color-mix(in srgb, currentColor calc(var(--ytm-rest-alpha) * 100%), transparent)
-        calc((var(--sweep) - var(--wx) + var(--feather)) * 1px));
+        calc((var(--wsweep) + var(--feather)) * 1px));
   background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-
-  /* 光の色を白で固定しない。色分けした行で色だけ飛ぶのを防ぐ。
-     半径は語ごとに固定で、動かすのは濃さだけ(半径を動かすと毎フレーム
-     字の影を描き直すことになる)。 */
-  text-shadow: 0 0 calc(var(--wglowr) * 1em)
-    color-mix(in srgb,
-      color-mix(in srgb, currentColor 55%, #fff)
-      calc(var(--wg) * var(--wglowa) * 100%), transparent);
+  /* 光は語の上に重ねた .lyric-glow が描く(下)。語そのものには影を付けない */
+  text-shadow: none;
 }
 
-/* 軽量モードでは光を落とす。塗りと持ち上がりは合成側で動くので残すが、
-   text-shadow は字の影を描き直させるうえ、濃さ(--wg)をメインスレッドから
-   毎フレーム書くことになる。ここが文字同期で唯一の実コスト。
-   変数が 0 でも宣言が残ると影の処理に入るので、宣言ごと消す。 */
-body.ytm-lightweight-mode.ytm-apple-sync .lyric-line.ytm-word-sync.active .lyric-word {
-  text-shadow: none;
+/* 光(伸ばした音だけ)。語と同じ字を、字は透明・影だけにして語の上に重ね、
+   濃さは opacity で変える。影の色と半径は語ごとに一度だけ JS が書く
+   (lyrics-ui.js の ensureLyricGlowEl)。
+   以前は語の text-shadow の濃さを毎フレーム変えていたが、text-shadow が
+   変わると字のはみ出し(影の範囲)を測り直すためにレイアウトが毎フレーム
+   走っていた。opacity なら描き直しだけで済む。
+   光の色を白で固定しない。色分けした行で色だけ飛ぶのを防ぐ。
+   字は data-t の写しを ::before に出す(DOM の文字にすると、歌詞カードや
+   Discord に渡す本文に光の分の字が混ざる)。 */
+body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync .lyric-word.lyric-word-glow {
+  position: relative;
+}
+
+body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync .lyric-glow {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* 韓国語の読み(::before)が上に積まれても、字の行は語の下端に来る */
+  bottom: 0;
+  font-style: inherit;
+  -webkit-text-fill-color: transparent;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+}
+
+body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync.active .lyric-glow {
+  display: block;
+  /* 合成側の層にしておく。層でない要素の opacity を変えると、変えるたびに
+     ページの描画の下ごしらえをやり直し、1 回 30KB 前後のゴミが出る
+     (YTM のページで実測。層にすると 4KB)。層になるのは今の行の光る語だけ。 */
+  will-change: opacity;
+}
+
+body.ytm-custom-layout.ytm-apple-sync .lyric-line.ytm-word-sync .lyric-glow::before {
+  content: attr(data-t);
+}
+
+/* 軽量モードでは光を落とす。塗りと持ち上がりは残す。 */
+body.ytm-lightweight-mode.ytm-apple-sync .lyric-line.ytm-word-sync.active .lyric-glow {
+  display: none;
 }
 
 /* 前後の行では素のテキストに戻す。塗りの先端が来ないので、
@@ -6430,7 +6462,10 @@ body.ytm-custom-layout #ytm-custom-wrapper {
   --ytm-movie-bar-lift: calc(40px + 80px * var(--ytm-ui-scale));
 }
 
-body.ytm-custom-layout #ytm-custom-wrapper:has(#ytm-custom-title.inactive),
+/* ytm-title-inactive は曲名が隠れている(#ytm-custom-title.inactive)間、JS が
+   器に付ける(cloud-sync.js の handleInteraction)。:has() で見ないこと
+   (html.ytm-custom-layout-root の注釈を参照)。 */
+body.ytm-custom-layout #ytm-custom-wrapper.ytm-title-inactive,
 body.ytm-custom-layout.ytm-bar-autohide:not(.ytm-bar-peek) #ytm-custom-wrapper {
   --ytm-movie-bar-lift: 0px;
 }

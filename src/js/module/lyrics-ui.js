@@ -941,14 +941,14 @@ const isCachedLyricSourceOff = async (source) => {
 // 軽量モードでも動かす。
 //
 // 以前はここで一緒に止めていたが、止める根拠が無かった。
-// 塗り(--sweep)も持ち上がり・膨らみ(transform)も Web Animations の
-// キーフレームで合成側に渡してあり、メインスレッドの毎フレーム処理は 0。
+// 持ち上がり・膨らみ(transform)は Web Animations のキーフレームで合成側に
+// 渡してあり、塗りも毎フレーム書き換わるのは先端がいる語だけ。
 // 軽量モードが本当に止めたいのは backdrop-filter のぼかしと背景ドリフトで、
 // あちらは「ドリフトの毎フレーム、ビューポート全面のブラーを再計算」する
 // (style.css の同名ブロックの注釈を参照)。桁が違う。
 // 設定の文言も「背景アニメーション停止」であって、歌詞の話ではない。
 //
-// メインスレッドを毎フレーム使うのは光(--wg → text-shadow)だけなので、
+// 毎フレーム書くもののうち塗り以外は光(.lyric-glow の濃さ)だけなので、
 // 軽量モードではそこだけ落とす(measureLyricLineSweep の _glow)。
 const applyAppleSyncClass = () => {
   if (typeof document === 'undefined' || !document.body) return;
@@ -4048,8 +4048,8 @@ const buildAlignedTranslations = (baseLines, transLinesByLang) => {
 //
 // ■ 塗りは行ぜんたいで1本の勾配として扱う
 //   語ごとに 0→1 の勾配を持たせると、語の変わり目でぼかしが途切れて
-//   境目が見える。そこで「行の先頭から何 px 進んだか」(--sweep)だけを
-//   毎フレーム1回書き、各語は自分の開始位置(--wx)を引いて自分の
+//   境目が見える。そこで「行の先頭から何 px 進んだか」を行に1本持ち、
+//   各語には自分の開始位置を引いた値(--wsweep)を渡して自分の
 //   ところだけを描く。先端は語をまたいでひと続きに流れる。
 //
 // ■ 光と拡大は伸ばした音だけ
@@ -4057,14 +4057,17 @@ const buildAlignedTranslations = (baseLines, transLinesByLang) => {
 //   分からなくなる。長さで強さを決め、短い語はほぼ素通しにする。
 //   曲線は applemusic-like-lyrics が Apple Music を参照して置いたものに合わせた。
 
-// 塗りの境目のぼかし半幅(文字サイズ基準)。ぼかしの幅はこの2倍。
+// 塗りの境目のぼかし半幅(px)。ぼかしの幅はこの2倍。style.css の
+// @property --feather の initial-value と同じ値にすること。
 //
 // ここを広げすぎると、ぼかしが1文字まるごとを覆ってしまう。すると
 // 先端が字を「横切る」のではなく、字が丸ごとフェードインすることになり、
 // それが1文字ずつ順に起きて、かくんかくんと点いていくように見える。
 // 全角の字は 1em あるので、ぼかしの幅は 1em より狭くないといけない。
 // applemusic-like-lyrics は行の高さの半分(≒0.6em)を既定にしている。
-const WORD_FEATHER_EM = 0.3;
+// (以前は文字サイズの 0.3em を行に書いていたが、語の CSS が 10px で
+// 上書きしていて効いていなかった。見た目はずっと 10px)
+const SWEEP_FEATHER_PX = 10;
 // 伸ばした音がふくらむ時に持ち上がる量。歌い終わっても残さない。
 //
 // 以前は「歌い終わった語は持ち上がったまま残る」ようにしていたが、
@@ -4115,7 +4118,7 @@ const isSpaceGlyph = (c) => c === ' ' || c === ' ' || c === '\t' || c === '　'
 // かといって1字ずつ切ると、箱が字の数だけ増える。全角は字形の詰めが
 // ほぼ効かないので総幅は変わらないのだが、箱が増えるほど字の間の見え方が
 // 揃わなくなる。ブラウザの語区切りで切って、語の中はひと続きに組ませる。
-// 塗りの位置は行ぜんたいの --sweep が持っているので、単位が語に粗くなっても
+// 塗りの位置は行ぜんたいの先端が持っているので、単位が語に粗くなっても
 // 同期の細かさは落ちない。
 const lyricUnitSegmenter = (() => {
   try {
@@ -4319,10 +4322,9 @@ const buildLyricWordUnits = (chars, lineEndSec) => {
 // 最初の数行のスクロールがカクついていた(実機、再計算 760 回 / 0.9 秒)。
 // 何行かまとめて測る時は、全部読んでから全部書く。
 const readLyricLineSweep = (row) => {
-  // PIP は別ウィンドウ・別文書。Range も getComputedStyle も
-  // その文書のものを使わないと、取れる値が別の窓のものになる。
+  // PIP は別ウィンドウ・別文書。Range はその文書のものを使わないと、
+  // 取れる値が別の窓のものになる。
   const doc = row.ownerDocument || (typeof document !== 'undefined' ? document : null);
-  const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
   const spans = row._ytmWordSpans;
   if (!doc) return { row, done: true };
   if (!Array.isArray(spans) || !spans.length) return { row, done: true };
@@ -4349,8 +4351,7 @@ const readLyricLineSweep = (row) => {
       const last = range.getBoundingClientRect().width;
       if (last > 0) geo[k].fractions = raw.map(w => w / last);
     });
-    const fontPx = (view ? parseFloat(view.getComputedStyle(row).fontSize) : NaN) || 32;
-    return { row, spans, geo, fontPx };
+    return { row, spans, geo };
   } catch (e) {
     return { row, failed: true };
   }
@@ -4366,7 +4367,7 @@ const applyLyricLineSweep = (plan) => {
     row._sweepX = null;
     return;
   }
-  const { spans, geo, fontPx } = plan;
+  const { spans, geo } = plan;
   try {
     // 1. 語を表示上の行ごとにまとめ、行の幅を出す
     const rowsByTop = new Map();
@@ -4382,7 +4383,8 @@ const applyLyricLineSweep = (plan) => {
       carry += rowsByTop.get(top).right;
     }
 
-    // 2. 語の開始位置を CSS 変数として渡し、文字ごとの位置表を作る
+    // 2. 語の開始位置と幅を覚え、文字ごとの位置表を作る
+    //    (塗りの位置は毎フレーム語ごとに引き算して渡す: writeLyricWordSweep)
     const times = [];
     const xs = [];
     spans.forEach((span, k) => {
@@ -4391,7 +4393,7 @@ const applyLyricLineSweep = (plan) => {
       const wordX = origin + g.left;
       const width = g.width;
       span._wx = wordX;
-      span.style.setProperty('--wx', String(wordX));
+      span._ww = width;
       const fractions = g.fractions;
 
       span._times.forEach((t, i) => {
@@ -4427,10 +4429,7 @@ const applyLyricLineSweep = (plan) => {
     row._sweepEnd = carry;
     row._sweepIndex = 0;
 
-    // 4. ぼかし半幅は文字サイズ基準の px。行に一度だけ置く。
-    row.style.setProperty('--feather', (WORD_FEATHER_EM * fontPx).toFixed(1));
-
-    // 5. 語ごとの強調の強さ。長さで決まるので毎フレーム計算しない。
+    // 4. 語ごとの強調の強さ。長さで決まるので毎フレーム計算しない。
     for (const span of spans) {
       const dur = (Number.isFinite(span._end) && Number.isFinite(span._start) && span._end > span._start)
         ? span._end - span._start
@@ -4438,26 +4437,21 @@ const applyLyricLineSweep = (plan) => {
       const scaleAmount = emphasisScaleAmount(dur);
       const glowAmount = emphasisGlowAmount(dur);
       // ここが小さい語は、膨らみも光も目に見えない。前倒しの窓を
-      // 広げて毎フレーム --wg を書くだけ無駄になるので外す。
+      // 広げて毎フレーム光の濃さを書くだけ無駄になるので外す。
       // この閾値だと 0.4 秒より短い語は素通しになる。
       span._emp = scaleAmount > 0.05 || glowAmount > 0.05;
       span._empStart = span._start - WORD_EMPHASIS_PREROLL_SEC;
       span._empDur = Math.max(WORD_LIFT_MIN_SEC, dur) * WORD_EMPHASIS_STRETCH;
       span._amp = scaleAmount;
       // 光は持ち上がりと分ける。持ち上がりは合成側のキーフレームなので
-      // 毎フレームの費用が無いが、光は --wg をメインスレッドから毎フレーム
-      // 書き、text-shadow を描き直させる。軽量モードで落とすのはこちらだけ。
+      // 毎フレームの費用が無いが、光は濃さ(opacity)をメインスレッドから
+      // 毎フレーム書く。軽量モードで落とすのはこちらだけ。
       // typeof で見ているのは、この関数がテストで単体切り出しされ、
       // 外側の config が存在しない文脈で実行されることがあるため。
       // ここで例外を出すと上の try/catch に落ちて塗りの表ごと消える。
       span._glow = span._emp &&
         !(typeof config !== 'undefined' && config && config.lowCpuMode);
-      if (span._glow) {
-        span.style.setProperty('--wglowa', glowAmount.toFixed(3));
-        // 光の半径は語ごとに固定。半径を毎フレーム変えると、そのたびに
-        // 字の影を描き直すことになって重い。動かすのは濃さだけ。
-        span.style.setProperty('--wglowr', Math.min(0.3, glowAmount * 0.3).toFixed(3));
-      }
+      if (span._glow) span._glowEl = ensureLyricGlowEl(span, glowAmount);
     }
   } catch (e) {
     row._sweepT = null;
@@ -4546,8 +4540,8 @@ const lyricSweepAt = (row, t) => {
 // 動かしてくれる。文字は一度だけ描かれ、あとは GPU が変形するだけになる。
 // 時計合わせは行ごとに1回。ずれた時(シーク・一時停止)だけ直す。
 //
-// 塗り(--sweep)と光(--wg)は位置を動かさないので丸めの問題が無く、
-// 毎フレーム書いたままで良い。合成できないプロパティなので、
+// 塗り(--wsweep)と光(.lyric-glow の濃さ)は位置を動かさないので丸めの問題が無く、
+// ループで書いたままで良い。塗りは合成できないプロパティなので、
 // 同じアニメーションに混ぜると transform まで合成から外れてしまう。
 
 // キーフレームの粗さ。間はブラウザが直線で埋めるので、
@@ -4634,7 +4628,7 @@ const createLyricWordMotion = (row) => {
 
   const animations = [];
 
-  // 塗り(--sweep)はアニメーションにしない。ループが lyricSweepAt で書く。
+  // 塗り(--wsweep)はアニメーションにしない。ループが lyricSweepAt で書く。
   // 以前はキーフレームで渡していたが、CSS 変数のアニメーションは合成側で
   // 走れず、画面の書き換えの回数(120Hz の画面なら 1 秒 120 回)だけ
   // メインスレッドで行のスタイルを計算し直して描き直していた。ループで
@@ -4739,6 +4733,66 @@ const writeLyricVar = (el, key, cacheKey, value, step) => {
   el.style.setProperty(key, String(q));
 };
 
+// 語の塗りの位置(語の左端から先端までの px)を語に書く。
+//
+// 以前は行に 1 つだけ --sweep(inherits: true)を書き、語は CSS で自分の
+// 開始位置を引いていた。書き込みは 1 回でも、受け継ぐ変数が変わるので行の中の
+// 全部の語を計算し直し、YTM のページが受け継がせてくる 1,500 個ほどの
+// CSS 変数の表をそのたびに作り直していた(毎分 1GB 近いゴミ、2026-10 実測)。
+// 語ごとに inherits: false の変数へ書けば、計算し直すのはその語だけになる。
+//
+// 語の外(語の幅 ± ぼかし半幅の外)では、先端がどこにあっても見た目が
+// 変わらない(全部塗れているか、全部まだか)。そこで値を止めておくと、
+// 毎フレーム書き換わるのは先端がいる語だけになる。
+const writeLyricWordSweep = (span, sweep) => {
+  const wx = span._wx;
+  if (!Number.isFinite(wx)) return;
+  const width = Number.isFinite(span._ww) ? span._ww : 0;
+  const local = Math.min(Math.max(sweep - wx, -SWEEP_FEATHER_PX), width + SWEEP_FEATHER_PX);
+  writeLyricVar(span, '--wsweep', '_wsweep', local, SWEEP_STEP);
+};
+
+// 光る語(伸ばした音)の上に重ねる光の層。字は透明で影だけを描き、
+// 濃さは opacity で変える(writeLyricGlow)。影の色と半径は語ごとに固定なので、
+// ここで一度だけ書く。
+//
+// 以前は語の text-shadow の濃さを毎フレーム変えていた。text-shadow が変わると
+// 字のはみ出し(影の範囲)を測り直すためにレイアウトが毎フレーム走る。
+// opacity なら描き直しだけで済む。
+// 字は data-t に写して ::before で出す(DOM の文字にすると、歌詞カードや
+// Discord に渡す本文・韓国語の読みの元になる textContent に混ざる)。
+// PIP は innerHTML で複製するので、向こうで測り直した時は複製された層を使う。
+const ensureLyricGlowEl = (span, glowAmount) => {
+  let el = null;
+  for (const child of span.children || []) {
+    if (child.classList?.contains('lyric-glow')) { el = child; break; }
+  }
+  if (!el) {
+    el = span.ownerDocument.createElement('i');
+    el.className = 'lyric-glow';
+    el.setAttribute('aria-hidden', 'true');
+    span.appendChild(el);
+  }
+  span.classList.add('lyric-word-glow');
+  const text = span.firstChild && span.firstChild.nodeType === 3 ? span.firstChild.data : '';
+  if (el.dataset.t !== text) el.dataset.t = text;
+  // 濃さの最大(wglowa)と半径(em)。色は白で固定せず、行の色(色分け)に寄せる。
+  const alpha = Number(glowAmount.toFixed(3)) * 100;
+  const radius = Math.min(0.3, glowAmount * 0.3).toFixed(3);
+  el.style.textShadow = `0 0 ${radius}em color-mix(in srgb, color-mix(in srgb, currentColor 55%, #fff) ${alpha}%, transparent)`;
+  return el;
+};
+
+// 光の濃さ(0〜1)。値が変わった時だけ書く。
+const writeLyricGlow = (span, env) => {
+  const el = span._glowEl;
+  if (!el) return;
+  const q = Math.round(env * WORD_STEP) / WORD_STEP;
+  if (span._wg === q) return;
+  span._wg = q;
+  el.style.opacity = String(q);
+};
+
 // PIP へは innerHTML で複製するので、span に持たせた JS のプロパティは
 // 消える。data 属性に書いておいた時刻から組み直す。
 const rehydrateLyricWordRow = (row) => {
@@ -4785,16 +4839,19 @@ const paintLyricWordRow = (row, t, rate = 1) => {
   if (!row._motionReady) createLyricWordMotion(row);
   syncLyricWordMotion(row, t, rate);
 
-  writeLyricVar(row, '--sweep', '_sweep', lyricSweepAt(row, t), SWEEP_STEP);
+  // 塗り。語ごとに書くが、値が変わるのは先端がいる語だけ(writeLyricWordSweep)
+  const sweep = lyricSweepAt(row, t);
+  for (let i = 0; i < spans.length; i++) writeLyricWordSweep(spans[i], sweep);
 
-  // 光は位置を動かさないので丸めの問題が無い。合成できないプロパティ
-  // なので、動きと同じアニメーションに混ぜると transform まで
-  // 合成から外れてしまう。こちらは毎フレーム書く。
+  // 光は位置を動かさないので丸めの問題が無い。濃さ(opacity)を毎フレーム書く。
+  // 合成側のアニメーションにはしない: 動画モードでは合成側で動くものがあると
+  // 画面の書き換えのたびに映像ごと合成し直す(createLyricWordMotion の注釈)。
+  // ループで書けば回数を決められる(曲 60・動画 30)。
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i];
     if (!span._glow || !Number.isFinite(span._start)) continue;
     const env = bellCurve((t - span._empStart) / span._empDur);
-    writeLyricVar(span, '--wg', '_wg', env, WORD_STEP);
+    writeLyricGlow(span, env);
   }
 };
 
@@ -4852,7 +4909,7 @@ const appendLyricWordSpans = (target, chars, lineEndSec) => {
 // ── ハモリ(バックボーカル)の行 ─────────────────────────────
 // 取得元が印を付けたハモリ(api.js の makeBackgroundVocal)を、本編の下に
 // 小さく薄い字で出す。文字同期なら本編と同じ塗りを、ハモリ自身の時刻で
-// 走らせる(.lyric-bg を 1 本の「行」として扱い、--sweep を自分で持つ)。
+// 走らせる(.lyric-bg を 1 本の「行」として扱い、塗りの先端を自分で持つ)。
 // 文字同期でない表示では、字だけを出して行と一緒に点ける。
 // 本編の外(.lyric-main の後ろ)に置くので、歌詞カードや Discord に渡す
 // 本編の文字には混ざらない。
@@ -4920,10 +4977,10 @@ const resetLyricWordRow = (row) => {
   const spans = row._ytmWordSpans;
   if (!spans || !spans.length) return;
   stopLyricWordMotion(row);
-  writeLyricVar(row, '--sweep', '_sweep', 0, SWEEP_STEP);
   row._sweepIndex = 0;
   for (let i = 0; i < spans.length; i++) {
-    if (spans[i]._emp) writeLyricVar(spans[i], '--wg', '_wg', 0, WORD_STEP);
+    writeLyricWordSweep(spans[i], 0);
+    if (spans[i]._emp) writeLyricGlow(spans[i], 0);
   }
 };
 
@@ -10874,8 +10931,16 @@ const shouldShowImmersion = () => {
   return true;
 };
 
-const applyImmersionShown = (shown) => {
+// Immersion を出している印。html にも付ける(下のページのスクロールバーを消す)。
+// CSS の :has() で body を見ると、文字同期の塗りを書くたびに HTML ごと
+// 計算し直しになる(style.css の html.ytm-custom-layout-root)。
+const setCustomLayoutClass = (shown) => {
   document.body.classList.toggle('ytm-custom-layout', shown);
+  document.documentElement.classList.toggle('ytm-custom-layout-root', shown);
+};
+
+const applyImmersionShown = (shown) => {
+  setCustomLayoutClass(shown);
   PlayerBar.check({ shown, skip: true });
   syncBarPlayerButton();
   // 操作バーを自動で隠す設定の時、開いた瞬間はバーの場所が分かるように少し出す

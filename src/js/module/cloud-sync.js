@@ -497,6 +497,14 @@
   let hoverPreviewLoading = false;
   let hoverPreviewAnchorEl = null;
 
+  // 曲名が隠れている(.inactive)ことを器にも写す(style.css の ytm-title-inactive)。
+  // 以前は CSS の :has(#ytm-custom-title.inactive) で見ていたが、:has() は器の中の
+  // スタイルが変わるたびに器・BODY・HTML まで計算し直させる。文字同期は語の塗りを
+  // 毎フレーム書くので、毎分 1GB 近いゴミになっていた(2026-10 実測)。
+  const syncTitleInactive = () => {
+    ui.wrapper?.classList.toggle('ytm-title-inactive', !!ui.title?.classList.contains('inactive'));
+  };
+
   const handleInteraction = () => {
     const targets = [];
     const title = ui.title;
@@ -521,6 +529,7 @@
     targets.forEach(element => {
       element.classList.remove('inactive');
     });
+    syncTitleInactive();
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       const isSettingsActive = ui.settings?.classList.contains('active');
@@ -532,6 +541,7 @@
         targets.forEach(element => {
           element.classList.add('inactive');
         });
+        syncTitleInactive();
       }
     }, 3000);
   };

@@ -56,7 +56,6 @@ test('measurement uses the document the line actually lives in', () => {
   const fn = sourceBetween(lyricsUiSource, 'const readLyricLineSweep', 'const applyLyricLineSweep')
   assert.match(fn, /row\.ownerDocument/)
   assert.match(fn, /doc\.createRange\(\)/)
-  assert.match(fn, /view \? parseFloat\(view\.getComputedStyle\(row\)/)
   assert.ok(!/[^.]\bdocument\.createRange/.test(fn), 'must not fall back to the main document')
 })
 
@@ -73,24 +72,27 @@ test('the PIP window carries the same word-sync rules as the main window', () =>
   // 片方だけ直すと PIP で塗りが動かなくなる
   const pipCss = sourceBetween(pipSource, '.lyric-line.ytm-word-sync {', '.lyric-translation')
   for (const needed of [
-    '--sweep',
-    '--wx',
+    'var(--wsweep)',
     'background-clip: text',
     '-webkit-text-fill-color: transparent',
-    'var(--wglowr)',
     'var(--feather)',
     'transform-origin: 50% 78%',
+    '.lyric-glow',
+    'content: attr(data-t)',
   ]) {
     assert.ok(pipCss.includes(needed), `PIP stylesheet is missing ${needed}`)
     assert.ok(styleSource.includes(needed), `main stylesheet is missing ${needed}`)
   }
-  // --sweep は型を宣言しておかないと Web Animations で動かせない。
-  // 宣言は文書ごとなので、PIP にも要る。
-  assert.match(pipSource, /@property --sweep \{[^}]*syntax: '<number>'/)
-  assert.match(styleSource, /@property --sweep \{[\s\S]*?syntax: '<number>'/)
+  // 毎フレーム書く変数は受け継がせない(受け継ぐ変数を書くと、YTM の 1,500 個ほどの
+  // CSS 変数の表をそのたびに作り直す)。宣言は文書ごとなので、PIP にも要る。
+  for (const name of ['--wsweep', '--feather']) {
+    const re = new RegExp(`@property ${name} \\{[^}]*syntax: '<number>';[^}]*inherits: false;`)
+    assert.match(pipSource.replace(/\s+/g, ' '), re, `PIP: ${name} must not inherit`)
+    assert.match(styleSource.replace(/\s+/g, ' '), re, `main: ${name} must not inherit`)
+  }
 
   // 塗りの停止位置の式がずれていないこと
-  const stop = 'calc((var(--sweep) - var(--wx) - var(--feather)) * 1px)'
+  const stop = 'calc((var(--wsweep) - var(--feather)) * 1px)'
   assert.ok(pipCss.includes(stop), 'PIP fill stops drifted')
   assert.ok(styleSource.includes(stop), 'main fill stops drifted')
   // どちらも transform は書かない(Web Animations が動かす)

@@ -2,9 +2,9 @@
 //
 // 以前は軽量モードで文字同期を丸ごと止めていたが、止める根拠が無かった。
 //
-//   塗り(--sweep)        … Web Animations のキーフレーム = 合成側。毎フレーム 0
-//   持ち上がり・膨らみ    … 同上。毎フレーム 0
-//   光(--wg→text-shadow) … メインスレッドから毎フレーム書く。実測 1.0〜1.4回/フレーム
+//   塗り(--wsweep)       … 先端がいる語だけ毎フレーム書く(受け継がない変数)
+//   持ち上がり・膨らみ    … Web Animations のキーフレーム = 合成側。毎フレーム 0
+//   光(.lyric-glow の濃さ) … メインスレッドから毎フレーム書く(opacity なのでレイアウトは起きない)
 //
 // 軽量モードが本当に止めたいのは backdrop-filter のぼかしと背景ドリフトで、
 // あちらは「ドリフトの毎フレーム、ビューポート全面のブラーを再計算」する。
@@ -48,10 +48,9 @@ test('光と持ち上がりが別の旗になっている', () => {
 })
 
 test('毎フレーム書くのは光の旗で判断する', () => {
-  const loop = uiSource.slice(
-    uiSource.indexOf("writeLyricVar(span, '--wg'") - 400,
-    uiSource.indexOf("writeLyricVar(span, '--wg'") + 80,
-  )
+  const at = uiSource.indexOf('writeLyricGlow(span, env);')
+  assert.notEqual(at, -1)
+  const loop = uiSource.slice(at - 400, at + 80)
   assert.match(loop, /if \(!span\._glow/)
   assert.doesNotMatch(loop, /if \(!span\._emp/, '光を持ち上がりの旗で判断している')
 })
@@ -66,10 +65,10 @@ test('持ち上がりは軽量モードでも動く', () => {
   assert.doesNotMatch(motion, /_glow/, '持ち上がりまで光の旗で止めている')
 })
 
-test('軽量モードでは文字の影を宣言ごと消す', () => {
+test('軽量モードでは光の層ごと消す', () => {
   assert.match(
     cssSource,
-    /body\.ytm-lightweight-mode\.ytm-apple-sync[^{]*\.lyric-word\s*\{\s*\n\s*text-shadow: none;/,
+    /body\.ytm-lightweight-mode\.ytm-apple-sync[^{]*\.lyric-glow\s*\{\s*\n\s*display: none;/,
   )
 })
 
