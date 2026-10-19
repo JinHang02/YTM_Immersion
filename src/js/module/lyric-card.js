@@ -74,7 +74,7 @@ const LyricCard = (() => {
     const out = [];
     for (let i = lo; i <= hi && i < rs.length; i++) {
       if (i < 0 || !isSelectable(rs[i])) continue;
-      out.push({ text: mainText(rs[i]), translation: translationText(rs[i]) });
+      out.push({ text: mainText(rs[i]), translation: translationText(rs[i]), time: parseFloat(rs[i].dataset?.startTime) });
     }
     return out;
   };
@@ -495,18 +495,31 @@ const LyricCard = (() => {
     return `lyric_card_${safe}.png`;
   };
 
-  // 曲のリンク。X の投稿や Discord に貼る。取れなければ null
-  const songUrl = () => {
-    const id = typeof getCurrentVideoId === 'function' ? getCurrentVideoId() : null;
-    return id ? `https://music.youtube.com/watch?v=${encodeURIComponent(id)}` : null;
+  // カードの最初の行が始まる、今の動画の頭からの秒(切り捨て)。取れなければ null
+  const startSecFor = (lines) => {
+    const time = lines?.[0]?.time;
+    if (!Number.isFinite(time) || typeof lyricTimeToVideoTime !== 'function') return null;
+    const sec = Math.floor(lyricTimeToVideoTime(time));
+    return sec >= 1 ? sec : null;
   };
 
-  // X の投稿画面に入れる文。歌詞の最初の行(長ければ縮める)と曲名・アーティスト
-  const postTextFor = ({ lines, title, artist }) => {
-    const first = String(lines?.[0]?.text || '').trim();
-    const quote = first.length > 80 ? `${first.slice(0, 79)}…` : first;
-    const credit = [title, artist].filter(Boolean).join(' / ');
-    return [quote ? `“${quote}”` : '', credit].filter(Boolean).join('\n');
+  // 曲のリンク。X の投稿や Discord に貼る。startSec があれば、そこから再生が始まる。
+  // 取れなければ null
+  const songUrl = (startSec = null) => {
+    const id = typeof getCurrentVideoId === 'function' ? getCurrentVideoId() : null;
+    if (!id) return null;
+    const url = `https://music.youtube.com/watch?v=${encodeURIComponent(id)}`;
+    return startSec ? `${url}&t=${startSec}` : url;
+  };
+
+  // X の投稿画面に入れる文。「乃木坂46「是非に及ばず」を、この歌詞から YouTube Music で聴く」。
+  // 歌詞そのものは画像に入っているので、文には入れない。この後ろにリンクが付く
+  const postTextFor = ({ title, artist }, timed) => {
+    if (!title) return '';
+    // 曲名に $& などが入っていても崩れないよう、置き換えは関数で渡す
+    const song = (artist ? t('lyric_card_post_credit').replace('{artist}', () => artist) : t('lyric_card_post_credit_title'))
+      .replace('{title}', () => title);
+    return t(timed ? 'lyric_card_post_listen_at' : 'lyric_card_post_listen').replace('{song}', () => song);
   };
 
   const copyImage = async (blob) => {
@@ -571,12 +584,13 @@ const LyricCard = (() => {
 
     // X に投稿: 画像をクリップボードに入れてから、文とリンクを入れた投稿画面を開く。
     // 画像は投稿画面で貼り付けてもらう(投稿画面のリンクは画像を受け取れない)。
+    const startSec = startSecFor(info.lines);
     const xBtn = root.querySelector('.replay-share-x');
     xBtn.textContent = t('lyric_card_post_x');
     xBtn.onclick = async () => {
       const copied = await copyImage(blob);
-      const params = new URLSearchParams({ text: postTextFor(info) });
-      const url = songUrl();
+      const url = songUrl(startSec);
+      const params = new URLSearchParams({ text: postTextFor(info, !!(url && startSec)) });
       if (url) params.set('url', url);
       window.open(`https://x.com/intent/tweet?${params.toString()}`, '_blank', 'noopener');
       if (typeof showToast === 'function') showToast(t(copied ? 'lyric_card_x_hint' : 'lyric_card_x_hint_save'));
@@ -584,7 +598,7 @@ const LyricCard = (() => {
 
     // リンクをコピー: Discord などで、画像と一緒に曲へ飛べるように
     const linkBtn = root.querySelector('.replay-share-link');
-    const url = songUrl();
+    const url = songUrl(startSec);
     if (!url || !navigator.clipboard) {
       linkBtn.remove();
     } else {

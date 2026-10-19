@@ -33,7 +33,7 @@ test('バーの byline を探す時、キューの行の byline は拾わない'
 })
 
 test('PiP にも Immersion と同じ表記のアーティスト名を渡す', () => {
-  assert.match(uiSource, /PipManager\.updateMeta\(meta\.title, \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\)/)
+  assert.match(uiSource, /PipManager\.updateMeta\(shownTitleFor\(meta\), \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\)/)
 })
 
 test('ページ側の橋渡しが、キューの行に videoId と小さめのサムネイルを写す', () => {

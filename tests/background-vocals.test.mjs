@@ -156,7 +156,7 @@ test('画面: 本編の下に出し、塗りは本編と別に走らせ、行は
   assert.match(css, /\.lyric-line\.active \.lyric-bg \{[^}]*max-height: 6em;/)
   // 止める位置はハモリを除いた高さで決める(その行だけずれない)
   assert.match(ui, /lyricAnchorOffset\(container, lyricRowAnchorHeight\(r, rRect\)\)/)
-  assert.match(ui, /\(lyricRowAnchorHeight\(r, rRect\) \/ 2\)/)
+  assert.match(ui, /const anchorHeight = lyricRowAnchorHeight\(r, rRect\);[\s\S]{0,200}\(anchorHeight \/ 2\)/)
   // ハモリも 1 本の行として測り直す(塗りの先端はハモリ自身のもの)
   assert.match(ui, /querySelectorAll\('\.lyric-line\.ytm-word-sync, \.lyric-bg\.ytm-bg-sync'\)/)
   // 行に受け継ぐ変数(--sweep)を毎フレーム書く作りには戻さない(毎分 1GB 近いゴミが出ていた)

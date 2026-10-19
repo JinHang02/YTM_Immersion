@@ -270,7 +270,7 @@ test('仮名の無い曲名は今までどおり素の文字列', () => {
 test('曲名は文字列として入れる(innerHTML を使わない)', () => {
   const fn = uiSource.slice(titleStart, titleEnd)
   assert.ok(!/innerHTML/.test(fn))
-  assert.match(uiSource, /function updateMetaUI\(meta\) \{\n  setTitleText\(ui\.title, meta\.title\);/)
+  assert.match(uiSource, /function updateMetaUI\(meta\) \{\n  _titleMeta = meta;\n  setTitleText\(ui\.title, shownTitleFor\(meta\)\);/)
 })
 
 test('keep-all は <wbr> を置いた曲名にだけ掛ける', () => {

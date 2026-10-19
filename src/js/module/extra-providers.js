@@ -336,6 +336,9 @@ const buildResult = (dynamicLines, want) => {
   };
 };
 
+// 手元のファイルの読み込み(local-lyrics.js)も同じ後始末を通す
+export const buildLyricsResult = (dynamicLines, want) => buildResult(dynamicLines, want);
+
 // 空文字の語を残すと UI 側の語組み立てが空の span を作る。
 const pushChar = (chars, t, text) => {
   const c = String(text ?? '');
@@ -623,7 +626,7 @@ export const parseTtmlTime = (value) => {
   return null;
 };
 
-const decodeXmlEntities = (value) => String(value ?? '')
+export const decodeXmlEntities = (value) => String(value ?? '')
   .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
   .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
   .replace(/&quot;/g, '"')

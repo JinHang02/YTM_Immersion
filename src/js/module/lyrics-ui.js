@@ -1535,6 +1535,7 @@ const observerMovieModeSetup = () => {
     }
 
     moviemode = newMoviemode;
+    if (changed) refreshShownTitle();
     // 背景(#ytm-custom-bg)は body の直下にあり、wrapper の moviemode クラスが
     // 届かない。CSS から動画モードを見分けられるよう body にも付ける
     document.body.classList.toggle('ytm-movie-mode', !!moviemode);
@@ -2994,15 +2995,19 @@ const getCurrentPlaybackTimeSec = () => {
 // 位置へ飛ぶには、ズレ直しのぶんを引いて video の時刻に戻す。
 // 以前は引いていなかったので、ズレ直しをした後に行を押すと、直す前の
 // タイムスタンプへ飛んでいた(+1.0s なら押した行より 1 秒先が光る)。
+// 歌詞の時刻 → 今の動画(videoId)の頭からの秒。歌詞カードの共有リンク(&t=)にも使う
+const lyricTimeToVideoTime = (lyricTime) => {
+  let local = Math.max(0, lyricTime - (Number(config.syncOffset) || 0) / 1000);
+  // 動画モードで対応表がある時は、音源の時刻を MV の時刻に直す
+  const segs = currentMovieSegments();
+  if (segs) local = songToMovieTime(local, segs);
+  return local;
+};
 const seekToLyricTime = (lyricTime) => {
   const v = document.querySelector('video');
   if (!v || !Number.isFinite(lyricTime)) return;
-  let local = Math.max(0, lyricTime - (Number(config.syncOffset) || 0) / 1000);
-  // 動画モードで対応表がある時は、音源の時刻を MV の時刻に直してから飛ぶ
-  const segs = currentMovieSegments();
-  if (segs) local = songToMovieTime(local, segs);
   // 連続再生では video の時刻が曲の頭で 0 に戻らないので、曲の始まり(timeOffset)を足す
-  v.currentTime = local + timeOffset;
+  v.currentTime = lyricTimeToVideoTime(lyricTime) + timeOffset;
 };
 
 const findMeaningIndexByTime = (timeSec) => {
@@ -8200,7 +8205,7 @@ function initLayout() {
 
   ui.input = createEl('input');
   ui.input.type = 'file';
-  ui.input.accept = '.lrc,.txt';
+  ui.input.accept = '.lrc,.txt,.ttml,.xml';
   ui.input.style.display = 'none';
   ui.input.onchange = handleUpload;
   document.body.appendChild(ui.input);
@@ -9435,11 +9440,26 @@ const handleUpload = (e) => {
   const uploadKey = currentKey;
   const r = new FileReader();
   r.onload = async (ev) => {
+    const text = String(ev.target.result || '').replace(/^\uFEFF/, '');
+    // 語の時刻を持つファイル(拡張 LRC の A2 形式・TTML)は語同期に組む。
+    // 以前は中身を行同期の LRC としてしか読まず、語の時刻を捨てていた。
+    const isTtmlFile = /<tt[\s>]/i.test(text);
+    let parsed = null;
+    if (isTtmlFile || isDynamicLrcFormat(text)) {
+      const res = await safeRuntimeSendMessage({ type: 'PARSE_LOCAL_LYRICS', payload: { text } });
+      parsed = res?.success && res.parsed ? res.parsed : null;
+    }
+    // 読めなかった TTML を文字列のまま出すと、XML がそのまま歌詞に並ぶ
+    if (isTtmlFile && !parsed) {
+      console.warn('[CS] local TTML could not be parsed');
+      return;
+    }
     await storage.set(uploadKey, {
       cacheVersion: LYRICS_CACHE_VERSION,
       video_id: currentLyricsVideoId || getCurrentVideoId() || null,
-      lyrics: String(ev.target.result || ''),
-      dynamicLines: null,
+      lyrics: parsed ? parsed.lyrics : text,
+      dynamicLines: parsed?.dynamicLines || null,
+      ...(parsed?.lrcMap ? { lrcMap: parsed.lrcMap } : {}),
       manualLyrics: true,
       lyricsSource: 'manual',
       fallbackUsed: false,
@@ -9490,6 +9510,10 @@ const lyricLoopNeedsEveryFrame = () => (
 const LYRIC_WAKE_EARLY_MS = 80;
 const LYRIC_FRAME_MS = 1000 / 60;
 const LYRIC_MOVIE_FRAME_MS = 1000 / 30;
+// 軽量モードは曲モードでも 1 秒 30 回まで。YTM のページはフレームを 1 枚作るだけで
+// 1 ms 近くかかり、塗りの回数がそのまま重さになる(実測、2026-10: ゴミ 95 → 68 MB/分、
+// メインスレッド 80 → 70 ms/秒)。先端の進みは 1 回に 10px ほどになる。
+const LYRIC_LIGHT_FRAME_MS = 1000 / 30;
 // タイマーは少し遅れて来ることがある。その分早めに起きて、rAF で画面に合わせる
 const LYRIC_FRAME_SLACK_MS = 4;
 let _lyricLoopRanAt = 0;
@@ -9736,21 +9760,27 @@ const startLyricRowMotion = (container, target, primaryIndex) => {
   // 歌っている行から上下へたどり、画面の外に出きった所で打ち切る。
   // 測るのは行が変わった時だけ。
   const picked = [];
+  // 動き出しの位置から着地までの間に、器の中に入るか。上に外れていれば -1、下なら 1
+  const placeOf = (row, y0) => {
+    const rect = row.getBoundingClientRect();
+    if (!rect.height) return null;
+    const endTop = rect.top - viewTop;
+    const startTop = endTop - y0;
+    if (Math.max(startTop, endTop) + rect.height < -margin) return -1;
+    if (Math.min(startTop, endTop) > height + margin) return 1;
+    return 0;
+  };
   // 戻り値 false で、その向きへの走査をやめる
   const visit = (i, dir) => {
     const row = rows[i];
     if (!row.classList.contains('lyric-line')) return true;
-    const rect = row.getBoundingClientRect();
-    if (!rect.height) return true;
-    const endTop = rect.top - viewTop;
     const prior = carried.get(row);
     const y0 = from + (prior ? prior.y : 0) - to;
-    const startTop = endTop - y0;
-    const hi = Math.min(startTop, endTop);
-    const lo = Math.max(startTop, endTop) + rect.height;
-    if (lo < -margin) return dir > 0;
-    if (hi > height + margin) return dir < 0;
-    picked.push({ index: i, row, y0, v0: prior ? prior.v : 0, wait: prior ? prior.wait : null });
+    const place = placeOf(row, y0);
+    if (place === null) return true;
+    if (place < 0) return dir > 0;
+    if (place > 0) return dir < 0;
+    picked.push({ index: i, row, y0, v0: prior ? prior.v : 0, wait: prior ? prior.wait : null, inView: true });
     return true;
   };
   const center = Number.isInteger(primaryIndex)
@@ -9758,22 +9788,34 @@ const startLyricRowMotion = (container, target, primaryIndex) => {
     : 0;
   for (let i = center; i < rows.length; i++) if (!visit(i, 1)) break;
   for (let i = center - 1; i >= 0; i--) if (!visit(i, -1)) break;
-  // 打ち切った先でまだ動いている行も、途中で放すと跳ぶので最後まで動かす
+  // 打ち切った先でまだ動いている行も、器の中に入るなら途中で放すと跳ぶので最後まで動かす。
+  // 動き出しから着地まで器の外にいる行は、本来の位置に置いて終わりにする(見えないので跳ばない)。
+  // 以前は外れた行も全部動かし直していた。行が次々に変わる速い曲では、上へ流れ去った行が
+  // 行のたびに新しい距離を足されて止まらず、動いている行が 1 行ごとに増え続けた
+  // (実測: 0.15 秒ごとの行で 237 行)。しかもそれが時間差の順番に数えられ、見えている行の
+  // 待ち時間が上限(1 秒)近くまで伸びて、今の行の下の行が遅れ、後から拾われた下の行に
+  // 追い越されて重なった。
   for (const row of carried.keys()) {
     if (picked.some(p => p.row === row) || row.parentNode !== container) continue;
     const prior = carried.get(row);
-    picked.push({ index: Array.prototype.indexOf.call(rows, row), row, y0: from + prior.y - to, v0: prior.v, wait: prior.wait });
+    const y0 = from + prior.y - to;
+    if (placeOf(row, y0) !== 0) continue;
+    picked.push({ index: Array.prototype.indexOf.call(rows, row), row, y0, v0: prior.v, wait: prior.wait, inView: false });
   }
   picked.sort((a, b) => a.index - b.index);
 
   const motion = new Map();
   // 新しく動き出す行はみな同じ距離・速度 0 なので、キーフレームを使い回す
   const shared = new Map();
-  picked.forEach(({ row, y0, v0, wait }, order) => {
+  // 時間差の順番は、画面の中で拾った行だけで数える(上の行から 0, 1, 2…)
+  let order = -1;
+  picked.forEach(({ row, y0, v0, wait, inView }) => {
+    if (inView) order += 1;
     if (Math.abs(y0) < SCROLL_SETTLE_PX && Math.abs(v0) < SCROLL_SETTLE_VEL) return;
-    const delay = wait !== null
-      ? wait
-      : (stagger ? Math.min(order, LYRIC_STAGGER_MAX_ROWS - 1) * LYRIC_STAGGER_DELAY : 0);
+    const fresh = stagger ? Math.min(Math.max(order, 0), LYRIC_STAGGER_MAX_ROWS - 1) * LYRIC_STAGGER_DELAY : 0;
+    // まだ待っている行は、残りの待ちと今回の順番の短い方。待ちを持ち越すだけだと、
+    // 行が来るたびに距離だけ足されて、動き出しが前の行の順番のまま遅れていく。
+    const delay = wait !== null ? Math.min(wait, fresh) : fresh;
     const key = `${y0.toFixed(2)}|${v0.toFixed(1)}`;
     let built = shared.get(key);
     if (!built) {
@@ -10012,7 +10054,9 @@ function startLyricRafLoop() {
         return;
       }
     }
-    const frameMs = moviemode === true ? LYRIC_MOVIE_FRAME_MS : LYRIC_FRAME_MS;
+    const frameMs = moviemode === true
+      ? LYRIC_MOVIE_FRAME_MS
+      : (config.lowCpuMode ? LYRIC_LIGHT_FRAME_MS : LYRIC_FRAME_MS);
     const wait = frameMs - (performance.now() - _lyricLoopRanAt) - LYRIC_FRAME_SLACK_MS;
     if (wait > 1) {
       lyricIdleTimerWindow = PipManager.pipWindow || window;
@@ -10591,7 +10635,13 @@ function updateLyricHighlight(currentTime) {
 
             const containerRect = container.getBoundingClientRect();
             const rRect = r.getBoundingClientRect();
-            const targetScroll = container.scrollTop + rRect.top - lyricRowScrollOffset(r) - containerRect.top - (container.clientHeight * 0.35) + (lyricRowAnchorHeight(r, rRect) / 2);
+            // 止める位置は、行の真ん中を器の上から 35% の所。CSS で
+            // --ytm-lyrics-anchor-top-lines を決めた形(動画モードの 2 行の帯)はそれに従う
+            const anchorHeight = lyricRowAnchorHeight(r, rRect);
+            const anchor = readLyricAnchorTopLines(container) === null
+              ? (container.clientHeight * 0.35) - (anchorHeight / 2)
+              : lyricAnchorOffset(container, anchorHeight);
+            const targetScroll = container.scrollTop + rRect.top - lyricRowScrollOffset(r) - containerRect.top - anchor;
 
             container._isProgrammaticScrolling = true;
             requestLyricScroll(container, targetScroll, scrollBehavior === 'auto', idx);
@@ -11507,7 +11557,7 @@ const tick = async () => {
     // PIPウィンドウのメタデータと歌詞表示をリセット
     if (PipManager) {
       // アーティスト名は Immersion と同じ表記にする(updateMetaUI が直前に置いた名前)
-      PipManager.updateMeta(meta.title, (ui.artist && ui.artist.textContent) || meta.artist);
+      PipManager.updateMeta(shownTitleFor(meta), (ui.artist && ui.artist.textContent) || meta.artist);
       PipManager.syncVideoMode();
       PipManager.resetLyrics(); // ここで歌詞を一旦消す
       // Schedule a delayed update check to ensure player bar DOM is fully updated by YTM
@@ -11713,8 +11763,27 @@ const showArtistNameOnly = (meta) => {
   ui.artist.innerText = readShownArtistName(meta) || meta.artist;
 };
 
+// 動画モードでは、動画のタイトル(「乃木坂46 『ごめんね ずっと･･･』Short Ver.」)を
+// 曲名だけに整えて出す(video-title.js)。歌詞を探す時の曲名は元のまま使う
+let _titleMeta = null;
+const shownTitleFor = (meta) => {
+  const title = String(meta?.title || '');
+  if (typeof moviemode === 'undefined' || moviemode !== true || typeof VideoTitle === 'undefined') return title;
+  return VideoTitle.formatTitle(title, meta.artist);
+};
+// 動画と曲を切り替えた時に、出している曲名を見直す
+const refreshShownTitle = () => {
+  if (!_titleMeta || !ui.title) return;
+  const title = shownTitleFor(_titleMeta);
+  setTitleText(ui.title, title);
+  if (typeof PipManager !== 'undefined' && PipManager.pipWindow) {
+    PipManager.updateMeta(title, (ui.artist && ui.artist.textContent) || _titleMeta.artist);
+  }
+};
+
 function updateMetaUI(meta) {
-  setTitleText(ui.title, meta.title);
+  _titleMeta = meta;
+  setTitleText(ui.title, shownTitleFor(meta));
   showArtistNameOnly(meta);
   updateArtworkUI(meta);
   ui.lyrics.innerHTML = '<div class="lyric-loading" style="opacity:0.5; padding:20px;">Loading...</div>';

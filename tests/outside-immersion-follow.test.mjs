@@ -80,7 +80,7 @@ test('PiP が開いていれば、Immersion の外でも曲の切り替わりま
   const layoutCall = gate.indexOf('initLayout();')
   assert.ok(layoutCall > gate.indexOf('} else {'), 'Immersion の外で器を組み直している')
   // 曲の切り替わりで PiP を更新している
-  assert.match(tickSource, /PipManager\.updateMeta\(meta\.title, \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\);/)
+  assert.match(tickSource, /PipManager\.updateMeta\(shownTitleFor\(meta\), \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\);/)
 })
 
 test('IMMERSION ボタンで開いた時に、今の曲へ合わせ直す', () => {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YTM-Immersion",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "description": "YouTube Musicをもっと美しく",
   "permissions": [
     "storage",
@@ -69,6 +69,7 @@
         "src/js/module/fluid-bg.js",
         "src/js/module/volume-leveler.js",
         "src/js/module/video-quality.js",
+        "src/js/module/video-title.js",
         "src/js/module/lyrics-ui.js",
         "src/js/content.js"
       ],

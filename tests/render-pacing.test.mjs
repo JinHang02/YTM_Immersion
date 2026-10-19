@@ -68,7 +68,7 @@ test('動画モードの今の行は曲名と同じ真っ白', () => {
   assert.match(css, /\.lyric-line\.active\.moviemode \{\s*color: #fff;\s*\}/)
 })
 
-test('語の塗りはアニメーションにせずループで書く。回数は曲 60・動画 30 まで', () => {
+test('語の塗りはアニメーションにせずループで書く。回数は曲 60・動画 30・軽量モード 30 まで', () => {
   // CSS 変数のアニメーションは合成側で走れず、画面の書き換え回数(120Hz なら 120 回)だけ
   // メインスレッドで動く
   assert.doesNotMatch(ui, /'--sweep': xs\[i\]/)
@@ -78,7 +78,8 @@ test('語の塗りはアニメーションにせずループで書く。回数�
   // 毎回作り直すことになる)
   assert.doesNotMatch(ui, /writeLyricVar\(row, '--sweep'/)
   assert.match(ui, /writeLyricVar\(span, '--wsweep', '_wsweep', local, SWEEP_STEP\);/)
-  assert.match(ui, /const frameMs = moviemode === true \? LYRIC_MOVIE_FRAME_MS : LYRIC_FRAME_MS;/)
+  assert.match(ui, /const frameMs = moviemode === true\s*\? LYRIC_MOVIE_FRAME_MS\s*: \(config\.lowCpuMode \? LYRIC_LIGHT_FRAME_MS : LYRIC_FRAME_MS\);/)
+  assert.match(ui, /const LYRIC_LIGHT_FRAME_MS = 1000 \/ 30;/)
   assert.match(ui, /const LYRIC_FRAME_MS = 1000 \/ 60;/)
   assert.match(ui, /const LYRIC_MOVIE_FRAME_MS = 1000 \/ 30;/)
 })

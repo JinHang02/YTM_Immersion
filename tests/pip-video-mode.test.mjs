@@ -27,7 +27,7 @@ const setup = (mode) => {
   const pipVideo = { srcObject: null, play: () => Promise.resolve() }
   const classes = new Set()
   const pipDoc = {
-    body: { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) } },
+    body: { classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), contains: (c) => classes.has(c) } },
     getElementById: (id) => (id === 'pip-video' ? pipVideo : null),
   }
   const state = { moviemode: mode }
@@ -66,5 +66,38 @@ test('動画モードで開く PiP は 16:9 の窓', () => {
 
 test('開いている PiP も、曲/動画の切り替えと曲替わりに付いてくる', () => {
   assert.match(uiSource, /moviemode = newMoviemode;[\s\S]{0,600}PipManager\.syncVideoMode\(\)/)
-  assert.match(uiSource, /PipManager\.updateMeta\(meta\.title, \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\);\s*PipManager\.syncVideoMode\(\);/)
+  assert.match(uiSource, /PipManager\.updateMeta\(shownTitleFor\(meta\), \(ui\.artist && ui\.artist\.textContent\) \|\| meta\.artist\);\s*PipManager\.syncVideoMode\(\);/)
+})
+
+test('動画モードの PiP は、今の行以外もぼかさず(本体の動画モードと同じ)、今の行と次の行の 2 行だけ見せる', () => {
+  assert.match(pipSource, /body\.ytm-pip-video \.lyric-line,\s*body\.ytm-pip-video \.lyric-line\.active \{\s*filter: none !important;/)
+  const band = pipSource.slice(pipSource.indexOf('body.ytm-pip-video:not(.ytm-animated-caption-mode) #pip-lyrics-container {'))
+  const rule = band.slice(0, band.indexOf('}'))
+  // 帯は行 2 本ぶん(行の高さ 1.35em + 行間 0.45em = 1.8em)。字の大きさは行と同じ式
+  assert.match(rule, /font-size: clamp\(15px, 3\.6vw, 34px\);/)
+  assert.match(pipSource, /body\.ytm-pip-video \.lyric-line\.singer-even \{\s*font-size: clamp\(15px, 3\.6vw, 34px\) !important;/)
+  assert.match(rule, /height: 3\.6em;/)
+  // 今の行を帯の上端に止める。下の余白は最後の行も上端まで上がれるぶん
+  assert.match(rule, /--ytm-lyrics-anchor-top-lines: 0;/)
+  assert.match(rule, /padding: 0 0 3\.6em 0;/)
+  // PiP も CSS の止める位置を読む(無い時は今までどおり 35% の所)
+  assert.match(uiSource, /const anchor = readLyricAnchorTopLines\(container\) === null\s*\? \(container\.clientHeight \* 0\.35\) - \(anchorHeight \/ 2\)\s*: lyricAnchorOffset\(container, anchorHeight\);/)
+})
+
+test('PiP の曲/動画を切り替えたら、止める位置を読み直して今の行へ寄せ直す', () => {
+  let recentered = 0
+  const { PipManager, state } = setup(true)
+  PipManager.pipLyricsContainer = {}
+  globalThis.recenterLyricsAfterResize = () => { recentered++ }
+  try {
+    PipManager.syncVideoMode()
+    assert.equal(recentered, 1)
+    PipManager.syncVideoMode()
+    assert.equal(recentered, 1, '変わっていなければ寄せ直さない')
+    state.set(false)
+    PipManager.syncVideoMode()
+    assert.equal(recentered, 2)
+  } finally {
+    delete globalThis.recenterLyricsAfterResize
+  }
 })

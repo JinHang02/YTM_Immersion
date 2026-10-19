@@ -320,3 +320,32 @@ test('行が変わった時の寄せは、組み込みの smooth スクロール
   assert.ok(!/scrollTo\(\{\s*top: targetScroll/.test(uiSource))
   assert.match(uiSource, /requestLyricScroll\(container, targetScroll/)
 })
+
+// 非常に速い歌詞(0.15 秒ごとに行が変わる)。以前は上へ流れ去った行も行のたびに
+// 動かし直していたので、動いている行が 1 行ごとに増え続け(0.15 秒ごとで 237 行)、
+// それが時間差の順番に数えられて、見えている行の待ちが 1 秒近くまで伸びた。
+// 今の行の下の行が遅れ、後から拾われた行に追い越されて重なり、最後は歌詞が
+// 画面の下へ落ちて見えなくなった(実機)。
+test('速い歌詞でも、動く行は増え続けず、行どうしが重ならず、今の行は画面に残る', () => {
+  for (const interval of [300, 150, 100]) {
+    const h = makeLyrics({ rowCount: 400, clientHeight: 411 })
+    h.goTo(0, true)
+    let line = 0
+    let next = 0
+    let maxMotion = 0
+    for (let f = 0; f < 60 * 20; f++) {
+      if (f * (1000 / 60) >= next && line < 390) { h.goTo(++line); next += interval }
+      maxMotion = Math.max(maxMotion, h.container._ytmRowMotion?.size || 0)
+      for (let i = 0; i < h.rows.length - 1; i++) {
+        const a = h.rows[i].visualTop()
+        const b = h.rows[i + 1].visualTop()
+        if (a < -50 || b > 411 + 50) continue
+        assert.ok(b - a - 43 > 20, `${interval}ms: 行 ${i} と ${i + 1} が詰まった (${(b - a - 43).toFixed(1)}px)`)
+      }
+      h.clock.advance(1000 / 60)
+    }
+    assert.ok(maxMotion < 20, `${interval}ms: 動いている行が増え続けた (${maxMotion})`)
+    const top = h.rows[line].visualTop()
+    assert.ok(top > 0 && top + 43 < 411, `${interval}ms: 今の行が画面の外 (${top.toFixed(0)}px)`)
+  }
+})

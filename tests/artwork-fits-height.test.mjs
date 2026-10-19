@@ -21,8 +21,9 @@ const rule = (selector) => {
 }
 
 test('ジャケットの大きさは画面の高さでも抑える', () => {
-  const art = rule('#ytm-artwork-container')
-  assert.match(art, /width: min\([\s\S]*400px[\s\S]*42vw[\s\S]*100vh - \d+px - \d+px \* var\(--ytm-ui-scale\)/)
+  assert.match(rule('#ytm-artwork-container'), /width: var\(--ytm-artwork-size\);/)
+  const art = rule('#ytm-custom-left-col')
+  assert.match(art, /--ytm-artwork-size: min\([\s\S]*400px[\s\S]*42vw[\s\S]*100vh - \d+px - \d+px \* var\(--ytm-ui-scale\)/)
   // 極端に低い画面でも潰れすぎない下限
   assert.match(art, /max\(calc\(48px \* var\(--ytm-ui-scale\)\)/)
 })
@@ -38,12 +39,12 @@ const reserve = (text, vh) => {
 }
 
 test('100% の時の大きさは変えず、150% でも 1000×700 に収まる', () => {
-  const normal = reserve(rule('#ytm-artwork-container'), '100vh')
+  const normal = reserve(rule('#ytm-custom-left-col'), '100vh')
   assert.equal(normal(1), 480, '100% の時のジャケットが変わる')
   // 実機の 1000×700・150%: 絵が 80px になり、曲/動画の切り替えとバーの間が 27px
   const art = 700 - normal(1.5)
   assert.ok(art >= 48 * 1.5, `下限を割って潜る: ${art}px`)
-  const noLyricsStart = css.indexOf('body.ytm-custom-layout.ytm-no-lyrics #ytm-artwork-container {')
+  const noLyricsStart = css.indexOf('body.ytm-custom-layout.ytm-no-lyrics #ytm-custom-left-col {\n    --ytm-artwork-size')
   const noLyrics = reserve(css.slice(noLyricsStart, noLyricsStart + 400), '91vh')
   assert.equal(noLyrics(1), 460, '歌詞が無い時の 100% の大きさが変わる')
 })
@@ -66,7 +67,7 @@ test('ボタン列の間隔は画面の幅でも抑える', () => {
 })
 
 test('歌詞が無い時(1.1 倍)の上限は広い画面だけに掛ける', () => {
-  const start = css.indexOf('@media (min-width: 901px) {\n  body.ytm-custom-layout.ytm-no-lyrics #ytm-artwork-container {')
+  const start = css.indexOf('@media (min-width: 901px) {\n  body.ytm-custom-layout.ytm-no-lyrics #ytm-custom-left-col {')
   assert.notEqual(start, -1, '狭い画面の 64px の絵まで上書きしてしまう')
   assert.match(css.slice(start, start + 400), /91vh - \d+px - \d+px \* var\(--ytm-ui-scale\)/)
 })

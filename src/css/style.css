@@ -251,8 +251,8 @@ body.ytm-custom-layout.ytm-no-lyrics #ytm-custom-left-col {
 /* 歌詞が無い時は左カラムを 1.1 倍に広げるので、縦の上限もそのぶん詰める。
    狭い画面(縦積み)は 64px の小さな絵なので触らない。 */
 @media (min-width: 901px) {
-  body.ytm-custom-layout.ytm-no-lyrics #ytm-artwork-container {
-    width: min(
+  body.ytm-custom-layout.ytm-no-lyrics #ytm-custom-left-col {
+    --ytm-artwork-size: min(
       calc(400px * var(--ytm-ui-scale)),
       42vw,
       max(calc(48px * var(--ytm-ui-scale)), calc(91vh - 190px - 270px * var(--ytm-ui-scale)))
@@ -598,6 +598,13 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   max-width: min(calc(500px * var(--ytm-ui-scale)), 52vw);
   text-align: center;
   transition: transform 0.5s ease;
+  /* ジャケットの大きさ(決め方は #ytm-artwork-container の説明)。左寄せのモードで
+     曲名の欄をジャケットと同じ幅にするので、ここで持って両方から読む。 */
+  --ytm-artwork-size: min(
+    calc(400px * var(--ytm-ui-scale)),
+    42vw,
+    max(calc(48px * var(--ytm-ui-scale)), calc(100vh - 200px - 280px * var(--ytm-ui-scale)))
+  );
 }
 
 /* 動画モードの曲名とアーティスト名。置き方・大きさ・字・影は YT-Immersion の MV モード
@@ -673,11 +680,7 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
      下限も 160px × UI サイズから下げた。150% では下限だけで 240px あり、
      1000×700 ではジャケットの上が画面から切れ、曲/動画の切り替えがバーの下に
      完全に潜っていた(実機で確認)。 */
-  width: min(
-    calc(400px * var(--ytm-ui-scale)),
-    42vw,
-    max(calc(48px * var(--ytm-ui-scale)), calc(100vh - 200px - 280px * var(--ytm-ui-scale)))
-  );
+  width: var(--ytm-artwork-size);
   aspect-ratio: 1;
   border-radius: calc(16px * var(--ytm-ui-scale));
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
@@ -5604,15 +5607,27 @@ body.ytm-custom-layout ytmusic-nav-bar .left-content #guide-button {
 }
 
 
+/* 左寄せ。曲名の欄をジャケットと同じ幅にして、文字の左端をジャケットの左端に揃える。
+   以前は左カラムごと align-items: flex-start にしていた。カラムはジャケットより
+   広い(500px と 400px)ので、ジャケットまで左へ寄り、全体が左にずれて見えた。
+   狭い画面(縦積み)は曲名の欄が display: contents で、最初から左寄せ。
+   動画モードは曲名を左下に置く別の並べ方(#ytm-custom-left-col.moviemode)。 */
 body.ytm-align-left #ytm-custom-left-col {
-  align-items: flex-start;
   text-align: left;
+}
+
+@media (min-width: 901px) {
+  body.ytm-align-left #ytm-custom-left-col:not(.moviemode) #ytm-custom-info-area {
+    /* 背の低い窓ではジャケットが小さくなる(1280×720 で 153px)。その幅に合わせると
+       曲名が細く折り返されるので、ジャケットより広くなっても 360px は確保する
+       (その時は左端が揃わず、左寄せの文字の塊が真ん中に来る)。 */
+    width: max(var(--ytm-artwork-size), min(100%, calc(360px * var(--ytm-ui-scale))));
+  }
 }
 
 body.ytm-align-left #ytm-custom-info-area {
   align-items: flex-start;
   padding: 0;
-  /* 左端に?るためにパディングを調整 */
 }
 
 body.ytm-align-left #ytm-custom-title {

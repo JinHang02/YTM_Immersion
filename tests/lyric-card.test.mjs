@@ -138,3 +138,54 @@ test('X に投稿は、画像をコピーしてから文とリンクの入った
   assert.match(fn, /https:\/\/x\.com\/intent\/tweet\?/)
   assert.match(cardSource, /music\.youtube\.com\/watch\?v=/)
 })
+
+// X に入れる文とリンク。「乃木坂46「是非に及ばず」を、この歌詞から YouTube Music で聴く」の
+// 後ろに、カードの最初の行から再生が始まるリンク(&t=秒)を付ける
+const loadShare = ({ lang = 'ja', videoId = 'abc123', toVideo = (x) => x } = {}) => {
+  const dict = {}
+  const block = nsSource.slice(nsSource.indexOf(`    ${lang}: {`))
+  for (const key of ['lyric_card_post_credit', 'lyric_card_post_credit_title', 'lyric_card_post_listen_at', 'lyric_card_post_listen']) {
+    dict[key] = JSON.parse(block.match(new RegExp(`\\b${key}: ("(?:[^"\\\\]|\\\\.)*")`))[1])
+  }
+  const from = cardSource.indexOf('  const startSecFor =')
+  const to = cardSource.indexOf('  const copyImage =')
+  const context = vm.createContext({
+    t: (k) => dict[k], Math, Number, encodeURIComponent,
+    getCurrentVideoId: () => videoId,
+    lyricTimeToVideoTime: toVideo,
+  })
+  vm.runInContext(`${cardSource.slice(from, to)}\nthis.startSecFor = startSecFor; this.songUrl = songUrl; this.postTextFor = postTextFor;`, context)
+  return context
+}
+
+test('X の文は「アーティスト「曲名」を、この歌詞から YouTube Music で聴く」。歌詞は文に入れない', () => {
+  const c = loadShare()
+  assert.equal(c.postTextFor({ title: '是非に及ばず', artist: '乃木坂46', lines: [{ text: '歌詞', time: 30 }] }, true), '乃木坂46「是非に及ばず」を、この歌詞から YouTube Music で聴く')
+  assert.equal(c.postTextFor({ title: '是非に及ばず', artist: '乃木坂46' }, false), '乃木坂46「是非に及ばず」を YouTube Music で聴く')
+  assert.equal(c.postTextFor({ title: '是非に及ばず', artist: '' }, true), '「是非に及ばず」を、この歌詞から YouTube Music で聴く')
+  assert.equal(c.postTextFor({ title: '', artist: '乃木坂46' }, true), '')
+  // 曲名に $ が入っていても崩れない
+  assert.equal(c.postTextFor({ title: 'A$&B', artist: '$1' }, false), '$1「A$&B」を YouTube Music で聴く')
+  assert.equal(loadShare({ lang: 'en' }).postTextFor({ title: 'Ditto', artist: 'NewJeans' }, true), 'Listen to "Ditto" by NewJeans from this line on YouTube Music')
+})
+
+test('リンクはカードの最初の行から始まる(&t=秒、切り捨て)。頭の 1 秒未満や時刻が無い時は付けない', () => {
+  const c = loadShare()
+  assert.equal(c.startSecFor([{ time: 83.9 }, { time: 90 }]), 83)
+  assert.equal(c.songUrl(83), 'https://music.youtube.com/watch?v=abc123&t=83')
+  assert.equal(c.startSecFor([{ time: 0.4 }]), null)
+  assert.equal(c.startSecFor([{ time: NaN }]), null)
+  assert.equal(c.songUrl(null), 'https://music.youtube.com/watch?v=abc123')
+  // ズレ直し・動画モードの対応表を通した、今の動画の秒を使う
+  assert.equal(loadShare({ toVideo: (x) => x + 82 }).startSecFor([{ time: 10 }]), 92)
+  assert.equal(loadShare({ videoId: null }).songUrl(83), null)
+})
+
+test('X とリンクのコピーは、どちらも時刻付きのリンクを使う。文言は 4 言語ぶんある', () => {
+  assert.match(cardSource, /const url = songUrl\(startSec\);\s*const params = new URLSearchParams\(\{ text: postTextFor\(info, !!\(url && startSec\)\) \}\);/)
+  assert.match(cardSource, /const linkBtn = root\.querySelector\('\.replay-share-link'\);\s*const url = songUrl\(startSec\);/)
+  assert.match(uiSource, /v\.currentTime = lyricTimeToVideoTime\(lyricTime\) \+ timeOffset;/)
+  for (const key of ['lyric_card_post_credit', 'lyric_card_post_credit_title', 'lyric_card_post_listen_at', 'lyric_card_post_listen']) {
+    assert.equal((nsSource.match(new RegExp(`\\b${key}:`, 'g')) || []).length, 4, key)
+  }
+})

@@ -454,6 +454,13 @@ const forceStyle = pipDoc.createElement('style');
           display: block; position: absolute; left: 0; pointer-events: none; background: #000;
         }
 
+        /* 動画モードは、今の行以外もぼかさない(本体の動画モードと同じ)。
+           映像の上の字は、ぼかすと滲んで読みにくい */
+        body.ytm-pip-video .lyric-line,
+        body.ytm-pip-video .lyric-line.active {
+          filter: none !important;
+        }
+
         @media (min-aspect-ratio: 5/4) {
           body.ytm-pip-video #pip-video {
             top: 0; width: 100%; height: 100%; object-fit: contain; z-index: -3;
@@ -484,6 +491,17 @@ const forceStyle = pipDoc.createElement('style');
           body.ytm-pip-video #pip-title,
           body.ytm-pip-video #pip-artist { text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
           body.ytm-pip-video #pip-artist { color: rgba(255,255,255,0.75); }
+          /* ボタンの丸は、すりガラス(backdrop-filter)をやめて暗い色で塗る。
+             白 10% + 後ろのぼかしだと、丸の色は真後ろの映像の色そのものになる。
+             MV は場面がどんどん変わるので、丸が明るくなったり暗くなったりを
+             繰り返してチカチカして見えた(曲の PiP の背景はゆっくり動くので目立たない)。 */
+          body.ytm-pip-video .control-btn {
+            background: rgba(0, 0, 0, 0.42);
+            backdrop-filter: none; -webkit-backdrop-filter: none;
+            transition: background-color 0.2s ease, transform 0.2s ease;
+          }
+          body.ytm-pip-video .control-btn:hover { background: rgba(0, 0, 0, 0.6); }
+          body.ytm-pip-video .control-btn:active { background: rgba(0, 0, 0, 0.7); }
           body.ytm-pip-video .controls-box { opacity: 0; transition: opacity 0.25s ease; }
           body.ytm-pip-video:hover .controls-box { opacity: 1; }
           body.ytm-pip-video:not(:hover) .control-btn { pointer-events: none; }
@@ -494,12 +512,23 @@ const forceStyle = pipDoc.createElement('style');
           /* 歌詞は本体の動画モード(style.css の #ytm-lyrics-stage.moviemode)と
              同じ作り: 右寄りの帯に右揃え、前後の行は薄く、字の後ろに柔らかい影。
              大きさは窓に合わせて縮める。 */
+          /* 見せるのは今の行と次の行の 2 行。帯の高さを行 2 本ぶん(1 行 = 行の高さ
+             1.35em + 行間 0.45em)にして、今の行を帯の上端に止める
+             (--ytm-lyrics-anchor-top-lines: 0。lyrics-ui.js が読む)。
+             以前は帯が窓の 52% あり、今の行を真ん中に置いていたので、前の行・
+             今の行・次の行の 3 行が見えていた。字の大きさは行(.lyric-line)と同じ式。
+             下の余白は、最後の行も帯の上端まで上がれるぶん。 */
           body.ytm-pip-video:not(.ytm-animated-caption-mode) #pip-lyrics-container {
-            top: auto; left: 36%; right: 5%; bottom: 5%; height: 52%;
-            padding: 20vh 0 20vh 0;
+            top: auto; left: 36%; right: 5%; bottom: 5%;
+            font-size: clamp(15px, 3.6vw, 34px);
+            height: 3.6em;
+            padding: 0 0 3.6em 0;
+            --ytm-lyrics-anchor-top-lines: 0;
             text-align: right;
-            mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 25%, black 75%, transparent 100%);
+            /* 上下の端だけぼかして、行が入れ替わる時に切れ目が見えないようにする。
+               上は今の行の字に掛からない幅(行の高さ 1.35em の上の余白 0.17em の中) */
+            mask-image: linear-gradient(to bottom, transparent 0, black 0.15em, black calc(100% - 0.3em), transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 0.15em, black calc(100% - 0.3em), transparent 100%);
           }
           body.ytm-pip-video .lyric-line,
           body.ytm-pip-video .lyric-line.singer-odd,
@@ -735,7 +764,12 @@ pipDoc.body.innerHTML = `
       const pipDoc = this.pipWindow?.document;
       if (!pipDoc?.body) return;
       const on = moviemode === true;
+      const was = pipDoc.body.classList.contains('ytm-pip-video');
       pipDoc.body.classList.toggle('ytm-pip-video', on);
+      // 歌詞の帯の形と、今の行を止める位置が変わるので、位置を出し直す
+      if (was !== on && this.pipLyricsContainer && typeof recenterLyricsAfterResize === 'function') {
+        recenterLyricsAfterResize();
+      }
       if (!on) {
         this.detachVideo();
         return;

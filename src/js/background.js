@@ -3,6 +3,7 @@ import * as API from './module/api.js';
 import * as Extra from './module/extra-providers.js';
 import * as Sources from './module/lyric-sources.js';
 import * as Agreement from './module/lyrics-agreement.js';
+import * as LocalLyrics from './module/local-lyrics.js';
 
 // ── デバッグログ ────────────────────────────────────────────
 // Service Worker には localStorage が無いので chrome.storage を見る。
@@ -274,6 +275,17 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
       sendResponse({ success: true, off: [...off] });
     })().catch(() => sendResponse({ success: false, off: [] }));
     return true;
+  }
+
+  // 手元の歌詞ファイル(拡張 LRC・TTML)を語同期の形に組む。lyrics-ui.js の handleUpload から。
+  if (req.type === 'PARSE_LOCAL_LYRICS') {
+    try {
+      const parsed = LocalLyrics.parseLocalLyricsFile(req.payload?.text);
+      sendResponse({ success: !!parsed, parsed: parsed || null });
+    } catch (e) {
+      sendResponse({ success: false, parsed: null, error: String(e) });
+    }
+    return false;
   }
 
   if (req.type === 'GET_LYRIC_SINGERS') {
