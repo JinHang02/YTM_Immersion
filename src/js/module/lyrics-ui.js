@@ -8224,6 +8224,11 @@ function initLayout() {
   ui.summaryBtn.setAttribute('aria-label', '曲の要約を表示');
   ui.summaryBtn.onclick = () => showMeaningSummaryPopup();
   ui.artwork.appendChild(ui.summaryBtn);
+  // ジャケットを押すと再生/一時停止(中の要約ボタンは除く)
+  ui.artwork.addEventListener('click', (ev) => {
+    if (ev.target.closest('#ytm-meaning-summary-btn')) return;
+    PlayerBar.controls.togglePlay();
+  });
   ui.meaningPanel = createEl('aside', 'ytm-meaning-panel', 'ytm-meaning-panel');
   ui.lyricsStage.append(ui.lyrics, ui.meaningPanel);
   ui.wrapper.append(leftCol, ui.lyricsStage);

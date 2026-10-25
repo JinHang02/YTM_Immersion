@@ -686,6 +686,8 @@ body.ytm-custom-layout ytmusic-av-toggle[playback-mode=ATV_PREFERRED] .song-butt
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
   overflow: hidden;
   margin-bottom: calc(30px * var(--ytm-ui-scale));
+  /* 押すと再生/一時停止(lyrics-ui.js) */
+  cursor: pointer;
 }
 
 #ytm-artwork-container.moviemode {
